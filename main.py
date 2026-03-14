@@ -1,5 +1,5 @@
 """
-IUPPITER — Backend FastAPI v2
+FINANZALIVE — Backend FastAPI v2
 Webhook Telegram + API dashboard clienti
 Tutti i 5 canali configurati
 """
@@ -240,6 +240,7 @@ async def create_client(data: dict):
         svc = supabase.table("services").select("id").eq("code", svc_code).single().execute()
         supabase.table("subscriptions").insert({
             "client_id": uid, "service_id": svc.data["id"], "expires_at": data.get("expires_at"),
+            "amount": data.get("amount"), "notes": data.get("notes"),
         }).execute()
     return {"ok": True, "client_id": str(uid)}
 
@@ -259,6 +260,17 @@ async def toggle_sub(client_id: str, service_code: str, active: bool):
 async def admin_signals(limit: int = 100):
     return supabase.table("signals").select("*, services(name)")\
         .order("created_at", desc=True).limit(limit).execute().data
+
+
+@app.patch("/admin/subscription/{client_id}/{service_code}/renew", dependencies=[Depends(require_admin)])
+async def renew_sub(client_id: str, service_code: str, data: dict):
+    svc = supabase.table("services").select("id").eq("code", service_code).single().execute()
+    update_data = {"active": True}
+    if data.get("expires_at"): update_data["expires_at"] = data["expires_at"]
+    if data.get("amount") is not None: update_data["amount"] = data["amount"]
+    if data.get("notes") is not None: update_data["notes"] = data["notes"]
+    supabase.table("subscriptions").update(update_data)        .eq("client_id", client_id).eq("service_id", svc.data["id"]).execute()
+    return {"ok": True}
 
 @app.get("/health")
 async def health():
