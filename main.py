@@ -1,6 +1,7 @@
 """
-FINANZALIVE — Backend FastAPI
+IUPPITER — Backend FastAPI v2
 Webhook Telegram + API dashboard clienti
+Tutti i 5 canali configurati
 """
 
 from fastapi import FastAPI, Request, HTTPException, Depends, Header
@@ -14,7 +15,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-app = FastAPI(title="Finanzalive API", version="1.0.0")
+app = FastAPI(title="Finanzalive API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -24,43 +25,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
-TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
-ADMIN_SECRET = os.environ["ADMIN_SECRET"]
+SUPABASE_URL        = os.environ["SUPABASE_URL"]
+SUPABASE_SERVICE_KEY= os.environ["SUPABASE_SERVICE_KEY"]
+TELEGRAM_BOT_TOKEN  = os.environ["TELEGRAM_BOT_TOKEN"]
+TELEGRAM_API        = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+ADMIN_SECRET        = os.environ["ADMIN_SECRET"]
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-# Mappa chat_id canale sorgente → service_code
+# Tutti e 5 i canali mappati
 CHANNEL_SERVICE_MAP = {
-    -1002552300319: "indices",   # Sala Indici World
-    # Aggiungi altri canali qui man mano:
-    # -100xxxxxxxxx: "vanilla_monthly",
-    # -100xxxxxxxxx: "vanilla_weekly",
-    # -100xxxxxxxxx: "forex",
-    # -100xxxxxxxxx: "fund_paam",
+    -1002552300319: "indices",          # Sala Indici World
+    -1002517239703: "vanilla_monthly",  # Opzioni Vanilla Mensile
+    -1002870950901: "vanilla_weekly",   # Opzioni Vanilla Settimanale
+    -1002850487439: "forex",            # Sala Forex
+    # fund_paam: nessun canale dedicato per ora
 }
 
-# ─────────────────────────────────────────────
-# PARSER SEGNALI
-# ─────────────────────────────────────────────
 def parse_signal(text: str) -> dict:
-    data = {
-        "signal_type": "INFO",
-        "direction": None,
-        "strike": None,
-        "strike_pct": None,
-        "premium": None,
-        "drawdown_max": None,
-        "pnl": None,
-    }
+    data = {"signal_type": "INFO", "direction": None, "strike": None,
+            "strike_pct": None, "premium": None, "drawdown_max": None, "pnl": None}
     t = text.upper()
 
-    if any(w in t for w in ["APERTURA", "SELL_PUT", "BUY_PUT", "OPEN", "ENTRY"]):
+    if any(w in t for w in ["APERTURA","SELL_PUT","BUY_PUT","OPEN","ENTRY","LONG","BUY"]):
         data["signal_type"] = "OPEN"
         if "SELL_PUT" in t: data["direction"] = "SELL_PUT"
         elif "BUY_PUT" in t: data["direction"] = "BUY_PUT"
+        elif "SELL" in t or "SHORT" in t: data["direction"] = "SELL"
+        elif "BUY" in t or "LONG" in t: data["direction"] = "BUY"
         m = re.search(r'STRIKE[^\d]*(\d+\.?\d*)', t)
         if m: data["strike"] = float(m.group(1))
         m = re.search(r'\((\d+\.?\d*)\s*%\)', text)
@@ -68,29 +60,18 @@ def parse_signal(text: str) -> dict:
             data["strike_pct"] = float(m.group(1))
             data["premium"] = round(data["strike_pct"] * 100, 2)
 
-    elif any(w in t for w in ["CHIUSURA", "PROFITTO", "CLOSE", "EXIT", "PROFIT"]):
+    elif any(w in t for w in ["CHIUSURA","PROFITTO","CLOSE","EXIT","PROFIT","TARGET","TP","SL"]):
         data["signal_type"] = "CLOSE"
         m = re.search(r'DRAWDOWN[^\d]*(\d+\.?\d*)', t)
         if m: data["drawdown_max"] = float(m.group(1))
         m = re.search(r'[+\-](\d+\.?\d*)', text)
         if m: data["pnl"] = float(m.group(1))
 
-    elif any(w in t for w in ["TRIGGER", "COPERTURA", "ALERT", "WARNING"]):
+    elif any(w in t for w in ["TRIGGER","COPERTURA","ALERT","WARNING","ATTENZIONE"]):
         data["signal_type"] = "ALERT"
-
-    elif any(w in t for w in ["BUY", "LONG", "ACQUISTO"]):
-        data["signal_type"] = "OPEN"
-        data["direction"] = "BUY"
-
-    elif any(w in t for w in ["SELL", "SHORT", "VENDITA"]):
-        data["signal_type"] = "OPEN"
-        data["direction"] = "SELL"
 
     return data
 
-# ─────────────────────────────────────────────
-# WEBHOOK TELEGRAM
-# ─────────────────────────────────────────────
 @app.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
     try:
@@ -98,7 +79,6 @@ async def telegram_webhook(request: Request):
     except:
         return {"ok": True}
 
-    # Gestisce sia messaggi normali che post di canale
     message = body.get("message") or body.get("channel_post")
     if not message:
         return {"ok": True}
@@ -110,22 +90,18 @@ async def telegram_webhook(request: Request):
     if not text:
         return {"ok": True}
 
-    # Identifica servizio dal canale sorgente
     service_code = CHANNEL_SERVICE_MAP.get(chat_id)
     if not service_code:
         return {"ok": True}
 
-    # Recupera service_id da DB
     try:
         svc = supabase.table("services").select("id").eq("code", service_code).single().execute()
         service_id = svc.data["id"]
     except:
         return {"ok": True}
 
-    # Parsa il segnale
     parsed = parse_signal(text)
 
-    # Salva segnale in DB
     try:
         sig = supabase.table("signals").insert({
             "service_id":          service_id,
@@ -146,21 +122,14 @@ async def telegram_webhook(request: Request):
         print(f"DB error: {e}")
         return {"ok": True}
 
-    # Notifica clienti abbonati
     await notify_subscribers(service_id, signal_id, text, service_code)
-
     return {"ok": True}
 
-# ─────────────────────────────────────────────
-# NOTIFICA SUBSCRIBERS
-# ─────────────────────────────────────────────
-async def notify_subscribers(service_id: int, signal_id: int, text: str, service_code: str):
+async def notify_subscribers(service_id, signal_id, text, service_code):
     try:
         subs = supabase.table("subscriptions")\
-            .select("client_id, clients(telegram_chat_id, full_name)")\
-            .eq("service_id", service_id)\
-            .eq("active", True)\
-            .execute()
+            .select("client_id, clients(telegram_chat_id)")\
+            .eq("service_id", service_id).eq("active", True).execute()
     except:
         return
 
@@ -171,8 +140,7 @@ async def notify_subscribers(service_id: int, signal_id: int, text: str, service
         "forex":           "💱 Sala Forex",
         "fund_paam":       "💼 Fondo PAAM",
     }
-    svc_label = svc_names.get(service_code, service_code)
-    msg = f"🔔 *{svc_label}*\n\n{text}"
+    msg = f"🔔 *{svc_names.get(service_code, service_code)}*\n\n{text}"
 
     async with httpx.AsyncClient() as client:
         for sub in subs.data:
@@ -182,38 +150,27 @@ async def notify_subscribers(service_id: int, signal_id: int, text: str, service
                 continue
             try:
                 r = await client.post(f"{TELEGRAM_API}/sendMessage", json={
-                    "chat_id":    tg_id,
-                    "text":       msg,
-                    "parse_mode": "Markdown"
+                    "chat_id": tg_id, "text": msg, "parse_mode": "Markdown"
                 }, timeout=10)
                 sent = r.status_code == 200
                 err  = None if sent else r.text
             except Exception as e:
-                sent = False
-                err  = str(e)
-
+                sent = False; err = str(e)
             try:
                 supabase.table("notifications").insert({
-                    "signal_id": signal_id,
-                    "client_id": sub["client_id"],
-                    "channel":   "telegram",
-                    "sent":      sent,
-                    "sent_at":   datetime.utcnow().isoformat() if sent else None,
-                    "error":     err,
+                    "signal_id": signal_id, "client_id": sub["client_id"],
+                    "channel": "telegram", "sent": sent,
+                    "sent_at": datetime.utcnow().isoformat() if sent else None,
+                    "error": err,
                 }).execute()
             except:
                 pass
 
-# ─────────────────────────────────────────────
-# AUTH HELPER
-# ─────────────────────────────────────────────
 def get_user(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Token mancante")
-    token = authorization.split(" ")[1]
     try:
-        user = supabase.auth.get_user(token)
-        return user.user
+        return supabase.auth.get_user(authorization.split(" ")[1]).user
     except:
         raise HTTPException(status_code=401, detail="Token non valido")
 
@@ -221,120 +178,87 @@ def require_admin(x_admin_secret: str = Header(None)):
     if x_admin_secret != ADMIN_SECRET:
         raise HTTPException(status_code=403, detail="Accesso negato")
 
-# ─────────────────────────────────────────────
-# API CLIENTI
-# ─────────────────────────────────────────────
 @app.get("/api/signals")
 async def get_signals(service_code: str = None, limit: int = 50, user=Depends(get_user)):
     subs = supabase.table("subscriptions")\
-        .select("service_id, services(code)")\
-        .eq("client_id", str(user.id))\
-        .eq("active", True)\
-        .execute()
+        .select("service_id, services(code)").eq("client_id", str(user.id)).eq("active", True).execute()
     allowed_codes = [s["services"]["code"] for s in subs.data]
     allowed_ids   = [s["service_id"] for s in subs.data]
 
     if service_code:
         if service_code not in allowed_codes:
-            raise HTTPException(status_code=403, detail="Non abbonato a questo servizio")
+            raise HTTPException(status_code=403, detail="Non abbonato")
         svc = supabase.table("services").select("id").eq("code", service_code).single().execute()
-        result = supabase.table("signals")\
-            .select("*, services(code, name)")\
-            .eq("service_id", svc.data["id"])\
-            .order("created_at", desc=True).limit(limit).execute()
+        result = supabase.table("signals").select("*, services(code,name)")\
+            .eq("service_id", svc.data["id"]).order("created_at", desc=True).limit(limit).execute()
     else:
-        result = supabase.table("signals")\
-            .select("*, services(code, name)")\
-            .in_("service_id", allowed_ids)\
-            .order("created_at", desc=True).limit(limit).execute()
+        result = supabase.table("signals").select("*, services(code,name)")\
+            .in_("service_id", allowed_ids).order("created_at", desc=True).limit(limit).execute()
     return result.data
 
 @app.get("/api/trades")
 async def get_trades(service_code: str = None, user=Depends(get_user)):
     subs = supabase.table("subscriptions")\
-        .select("service_id, services(code)")\
-        .eq("client_id", str(user.id))\
-        .eq("active", True)\
-        .execute()
-    allowed_ids = [s["service_id"] for s in subs.data]
+        .select("service_id, services(code)").eq("client_id", str(user.id)).eq("active", True).execute()
+    allowed_ids   = [s["service_id"] for s in subs.data]
     allowed_codes = [s["services"]["code"] for s in subs.data]
 
     if service_code:
         if service_code not in allowed_codes:
             raise HTTPException(status_code=403, detail="Non abbonato")
         svc = supabase.table("services").select("id").eq("code", service_code).single().execute()
-        result = supabase.table("trades")\
-            .select("*, services(code,name)")\
-            .eq("service_id", svc.data["id"])\
-            .order("opened_at", desc=True).execute()
+        result = supabase.table("trades").select("*, services(code,name)")\
+            .eq("service_id", svc.data["id"]).order("opened_at", desc=True).execute()
     else:
-        result = supabase.table("trades")\
-            .select("*, services(code,name)")\
-            .in_("service_id", allowed_ids)\
-            .order("opened_at", desc=True).execute()
+        result = supabase.table("trades").select("*, services(code,name)")\
+            .in_("service_id", allowed_ids).order("opened_at", desc=True).execute()
     return result.data
 
 @app.get("/api/services")
 async def get_my_services(user=Depends(get_user)):
     return supabase.table("subscriptions")\
-        .select("active, expires_at, services(code, name, description)")\
-        .eq("client_id", str(user.id))\
-        .execute().data
+        .select("active, expires_at, services(code,name,description)")\
+        .eq("client_id", str(user.id)).execute().data
 
 @app.get("/api/profile")
 async def get_profile(user=Depends(get_user)):
-    return supabase.table("clients")\
-        .select("*").eq("id", str(user.id)).single().execute().data
+    return supabase.table("clients").select("id,full_name,email,active,created_at")\
+        .eq("id", str(user.id)).single().execute().data
 
-# ─────────────────────────────────────────────
-# ADMIN API
-# ─────────────────────────────────────────────
 @app.post("/admin/client", dependencies=[Depends(require_admin)])
 async def create_client(data: dict):
     auth_user = supabase.auth.admin.create_user({
-        "email":          data["email"],
-        "password":       data["password"],
-        "email_confirm":  True,
+        "email": data["email"], "password": data["password"], "email_confirm": True,
     })
     uid = auth_user.user.id
     supabase.table("clients").insert({
-        "id":                uid,
-        "full_name":         data.get("full_name", ""),
-        "email":             data["email"],
-        "telegram_chat_id":  data.get("telegram_chat_id"),
+        "id": uid, "full_name": data.get("full_name",""), "email": data["email"],
+        "telegram_chat_id": data.get("telegram_chat_id"),
         "telegram_username": data.get("telegram_username"),
     }).execute()
     for svc_code in data.get("services", []):
         svc = supabase.table("services").select("id").eq("code", svc_code).single().execute()
         supabase.table("subscriptions").insert({
-            "client_id":  uid,
-            "service_id": svc.data["id"],
-            "expires_at": data.get("expires_at"),
+            "client_id": uid, "service_id": svc.data["id"], "expires_at": data.get("expires_at"),
         }).execute()
     return {"ok": True, "client_id": str(uid)}
 
 @app.get("/admin/clients", dependencies=[Depends(require_admin)])
 async def list_clients():
     return supabase.table("clients")\
-        .select("*, subscriptions(active, services(name, code))")\
-        .execute().data
+        .select("*, subscriptions(active, services(name,code))").execute().data
 
 @app.patch("/admin/subscription/{client_id}/{service_code}", dependencies=[Depends(require_admin)])
 async def toggle_sub(client_id: str, service_code: str, active: bool):
     svc = supabase.table("services").select("id").eq("code", service_code).single().execute()
-    supabase.table("subscriptions")\
-        .update({"active": active})\
-        .eq("client_id", client_id)\
-        .eq("service_id", svc.data["id"])\
-        .execute()
+    supabase.table("subscriptions").update({"active": active})\
+        .eq("client_id", client_id).eq("service_id", svc.data["id"]).execute()
     return {"ok": True}
 
 @app.get("/admin/signals", dependencies=[Depends(require_admin)])
 async def admin_signals(limit: int = 100):
-    return supabase.table("signals")\
-        .select("*, services(name)")\
-        .order("created_at", desc=True)\
-        .limit(limit).execute().data
+    return supabase.table("signals").select("*, services(name)")\
+        .order("created_at", desc=True).limit(limit).execute().data
 
 @app.get("/health")
 async def health():
