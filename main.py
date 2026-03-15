@@ -43,186 +43,131 @@ CHANNEL_SERVICE_MAP = {
 }
 
 def parse_signal(text: str) -> dict:
-    data = {"signal_type": "INFO", "direction": None, "strike": None,
-            "strike_pct": None, "premium": None, "drawdown_max": None, "pnl": None}
     text = text.replace('\n', ' ').replace('\r', ' ')
+    data = {
+        "signal_type": "INFO", "direction": None, "strike": None,
+        "strike_pct": None, "premium": None, "drawdown_max": None,
+        "pnl": None, "symbol": None, "price": None, "tp": None
+    }
     t = text.upper()
 
-    # Formato vanilla: "Alert for US500SELL PUT su US500 con strike: 5952.06 (Spot: 6649.2) Scadenza: Mensile"
+    # Simboli indici validi
+    INDEX_SYMBOLS = ["US100", "US30", "DE40", "JPN225"]
+
+    # ── VANILLA MENSILE ingresso ──
+    # "Alert for US500 SELL PUT su US500 con strike: 5952.06 (Spot: 6649.2) Scadenza: Mensile"
     if "STRIKE:" in t and ("SELL PUT" in t or "BUY PUT" in t or "SCADENZA" in t or "SELL_PUT" in t):
         data["signal_type"] = "OPEN"
-        data["direction"] = "SELL_PUT" if "SELL PUT" in t else "BUY_PUT"
-        m = re.search(r'STRIKE:\s*(\d+\.?\d*)', t)
-        if m: data["strike"] = float(m.group(1))
-        # Calcola OTM% da strike e spot
-        m_spot = re.search(r'SPOT:\s*(\d+\.?\d*)', t)
+        data["direction"] = "SELL_PUT" if ("SELL PUT" in t or "SELL_PUT" in t) else "BUY_PUT"
+        m = re.search(r'STRIKE:\s*([\d,\.]+)', t)
+        if m: data["strike"] = float(m.group(1).replace(",",""))
+        m_spot = re.search(r'SPOT:\s*([\d,\.]+)', t)
         if m and m_spot:
-            strike = float(m.group(1))
-            spot = float(m_spot.group(1))
-            data["strike_pct"] = round(abs(spot - strike) / spot * 100, 2)
-            data["premium"] = round(data["strike_pct"] * 100, 2)
+            strike = float(m.group(1).replace(",",""))
+            spot   = float(m_spot.group(1).replace(",",""))
+            if spot > 0:
+                data["strike_pct"] = round(abs(spot - strike) / spot * 100, 2)
+                data["premium"]    = round(data["strike_pct"] * 100, 2)
         return data
 
-    # Formato chiusura vanilla: "CHIUSURA PUTSELL Strike: 5952.06 - Spot: ... - Max DD: 2.45%"
+    # ── VANILLA MENSILE chiusura ──
+    # "CHIUSURA PUTSELL Strike: 5952.06 - Max DD: 2.45% - CHIUSURA IN PROFITTO"
     if "CHIUSURA PUTSELL" in t or "CHIUSURA PUTBUY" in t:
         data["signal_type"] = "CLOSE"
         data["direction"] = "SELL_PUT" if "PUTSELL" in t else "BUY_PUT"
-        m = re.search(r'STRIKE:\s*(\d+\.?\d*)', t)
-        if m: data["strike"] = float(m.group(1))
-        m = re.search(r'MAX DD:\s*(\d+\.?\d*)', t)
+        m = re.search(r'STRIKE:\s*([\d,\.]+)', t)
+        if m: data["strike"] = float(m.group(1).replace(",",""))
+        m = re.search(r'MAX DD:\s*([\d\.]+)', t)
         if m: data["drawdown_max"] = float(m.group(1))
         data["pnl"] = 1 if "PROFITTO" in t else -1
         return data
 
-    # Formati generici per altri servizi
-    if any(w in t for w in ["APERTURA","OPEN","ENTRY","LONG","BUY"]):
-        data["signal_type"] = "OPEN"
-        if "SELL_PUT" in t: data["direction"] = "SELL_PUT"
-        elif "BUY_PUT" in t: data["direction"] = "BUY_PUT"
-        elif "SELL" in t or "SHORT" in t: data["direction"] = "SELL"
-        elif "BUY" in t or "LONG" in t: data["direction"] = "BUY"
-        m = re.search(r'STRIKE[^\d]*(\d+\.?\d*)', t)
-        if m: data["strike"] = float(m.group(1))
+    # ── INDICI WORLD chiusura ──
+    # "Alert for US100CHIUSURA SELL US100" / "Alert for DE40CHIUSURA SELL DE40"
+    for sym in INDEX_SYMBOLS:
+        if sym+"CHIUSURA" in t or (sym in t and "CHIUSURA" in t):
+            data["signal_type"] = "CLOSE"
+            data["symbol"] = sym
+            m_dir = re.search(r'CHIUSURA\s+(BUY|SELL)', t)
+            if m_dir: data["direction"] = m_dir.group(1)
+            return data
 
-    elif any(w in t for w in ["CHIUSURA","PROFITTO","CLOSE","EXIT","PROFIT","TP","SL"]):
+    # ── INDICI WORLD ingresso ──
+    # "Alert for US100SELL SCALPING US100 Apertura: 24,525.80"
+    for sym in INDEX_SYMBOLS:
+        if sym in t and "SCALPING" in t and "APERTURA" in t:
+            data["signal_type"] = "OPEN"
+            data["symbol"] = sym
+            m_dir = re.search(sym + r'\s*(BUY|SELL)', t)
+            if not m_dir: m_dir = re.search(r'ALERT FOR '+sym+r'(BUY|SELL)', t)
+            if m_dir: data["direction"] = m_dir.group(1)
+            m_price = re.search(r'APERTURA:\s*([\d,\.]+)', t)
+            if m_price: data["price"] = float(m_price.group(1).replace(",",""))
+            return data
+
+    # ── FOREX chiusura ──
+    # "Alert for AUDCHFCLOSE BUY AUDCHF.ecn"
+    m = re.search(r'ALERT FOR ([A-Z]{6})CLOSE\s+(BUY|SELL)', t)
+    if m:
         data["signal_type"] = "CLOSE"
-        m = re.search(r'MAX DD[^\d]*(\d+\.?\d*)', t)
-        if m: data["drawdown_max"] = float(m.group(1))
+        data["symbol"]    = m.group(1)
+        data["direction"] = m.group(2)
+        return data
 
-    elif any(w in t for w in ["TRIGGER","COPERTURA","ALERT","WARNING","ATTENZIONE"]):
+    # ── FOREX ingresso ──
+    # "Alert for AUDCHF BUY AUDCHF.ecn a mercato TP: .55327"
+    m = re.search(r'ALERT FOR ([A-Z]{6})\s+(BUY|SELL)', t)
+    if m and "CHIUSURA" not in t and "SCALPING" not in t:
+        data["signal_type"] = "OPEN"
+        data["symbol"]    = m.group(1)
+        data["direction"] = m.group(2)
+        m_tp = re.search(r'TP:\s*([\d\.]+)', t)
+        if m_tp: data["tp"] = float(m_tp.group(1))
+        return data
+
+    # ── FALLBACK ──
+    if any(w in t for w in ["APERTURA","OPEN","ENTRY"]):
+        data["signal_type"] = "OPEN"
+    elif any(w in t for w in ["CHIUSURA","CLOSE","EXIT"]):
+        data["signal_type"] = "CLOSE"
+    elif any(w in t for w in ["TRIGGER","ALERT","WARNING"]):
         data["signal_type"] = "ALERT"
 
     return data
 
 
 async def auto_update_trades(service_id: int, service_code: str, parsed: dict, text: str):
-    """Aggiorna automaticamente la tabella trades per vanilla mensile"""
-    if service_code != "vanilla_monthly":
+    """Crea/aggiorna trades automaticamente per vanilla, forex e indici"""
+    if service_code not in ["vanilla_monthly", "forex", "indices"]:
         return
-
     try:
-        if parsed["signal_type"] == "OPEN" and parsed["strike"]:
-            # Crea nuova riga OPEN in trades
-            supabase.table("trades").insert({
+        if parsed["signal_type"] == "OPEN":
+            insert_data = {
                 "service_id": service_id,
-                "direction": parsed["direction"],
-                "strike": parsed["strike"],
-                "strike_pct": parsed["strike_pct"],
-                "premium_collected": parsed["premium"],
-                "status": "OPEN",
-                "opened_at": datetime.utcnow().isoformat(),
-                "notes": f"Auto - {datetime.utcnow().strftime('%b %Y')}",
-            }).execute()
+                "direction":  parsed.get("direction"),
+                "status":     "OPEN",
+                "opened_at":  datetime.utcnow().isoformat(),
+                "notes":      f"Auto - {parsed.get('symbol', service_code)} {datetime.utcnow().strftime('%d/%m/%Y %H:%M')}",
+            }
+            if parsed.get("strike"):     insert_data["strike"]            = parsed["strike"]
+            if parsed.get("price"):      insert_data["strike"]            = parsed["price"]
+            if parsed.get("strike_pct"): insert_data["strike_pct"]        = parsed["strike_pct"]
+            if parsed.get("premium"):    insert_data["premium_collected"]  = parsed["premium"]
+            supabase.table("trades").insert(insert_data).execute()
 
-        elif parsed["signal_type"] == "CLOSE" and parsed["strike"]:
-            # Trova l'ultima operazione OPEN e chiudila
-            open_trade = supabase.table("trades")                .select("id")                .eq("service_id", service_id)                .eq("status", "OPEN")                .order("opened_at", desc=True)                .limit(1).execute()
-
-            if open_trade.data:
-                trade_id = open_trade.data[0]["id"]
+        elif parsed["signal_type"] == "CLOSE":
+            # Trova ultima operazione OPEN per questo servizio
+            q = supabase.table("trades").select("id")                .eq("service_id", service_id)                .eq("status", "OPEN")                .order("opened_at", desc=True).limit(1).execute()
+            if q.data:
                 update_data = {
-                    "status": "CLOSED",
+                    "status":    "CLOSED",
                     "closed_at": datetime.utcnow().isoformat(),
                 }
-                if parsed["drawdown_max"]: update_data["drawdown_max"] = parsed["drawdown_max"]
-                supabase.table("trades").update(update_data)                    .eq("id", trade_id).execute()
+                if parsed.get("drawdown_max"): update_data["drawdown_max"] = parsed["drawdown_max"]
+                supabase.table("trades").update(update_data)                    .eq("id", q.data[0]["id"]).execute()
     except Exception as e:
-        print(f"Auto trade update error: {e}")
+        print(f"Auto trade error: {e}")
 
-@app.post("/webhook/telegram")
-async def telegram_webhook(request: Request):
-    try:
-        body = await request.json()
-    except:
-        return {"ok": True}
-
-    message = body.get("message") or body.get("channel_post")
-    if not message:
-        return {"ok": True}
-
-    chat_id = message.get("chat", {}).get("id")
-    msg_id  = message.get("message_id")
-    text    = message.get("text") or message.get("caption", "")
-
-    if not text:
-        return {"ok": True}
-
-    service_code = CHANNEL_SERVICE_MAP.get(chat_id)
-    if not service_code:
-        return {"ok": True}
-
-    try:
-        svc = supabase.table("services").select("id").eq("code", service_code).single().execute()
-        service_id = svc.data["id"]
-    except:
-        return {"ok": True}
-
-    parsed = parse_signal(text)
-
-    try:
-        sig = supabase.table("signals").insert({
-            "service_id":          service_id,
-            "telegram_message_id": msg_id,
-            "telegram_chat_id":    chat_id,
-            "message_text":        text,
-            "signal_type":         parsed["signal_type"],
-            "direction":           parsed["direction"],
-            "strike":              parsed["strike"],
-            "strike_pct":          parsed["strike_pct"],
-            "premium":             parsed["premium"],
-            "drawdown_max":        parsed["drawdown_max"],
-            "pnl":                 parsed["pnl"],
-            "raw_json":            body,
-        }).execute()
-        signal_id = sig.data[0]["id"]
-    except Exception as e:
-        print(f"DB error: {e}")
-        return {"ok": True}
-
-    await notify_subscribers(service_id, signal_id, text, service_code)
-    await auto_update_trades(service_id, service_code, parsed, text)
-    return {"ok": True}
-
-async def notify_subscribers(service_id, signal_id, text, service_code):
-    try:
-        subs = supabase.table("subscriptions")\
-            .select("client_id, clients(telegram_chat_id)")\
-            .eq("service_id", service_id).eq("active", True).execute()
-    except:
-        return
-
-    svc_names = {
-        "indices":         "🌐 Sala Indici World",
-        "vanilla_monthly": "📅 Vanilla Mensile",
-        "vanilla_weekly":  "📆 Vanilla Settimanale",
-        "forex":           "💱 Sala Forex",
-        "fund_paam":       "💼 Fondo PAAM",
-    }
-    msg = f"🔔 *{svc_names.get(service_code, service_code)}*\n\n{text}"
-
-    async with httpx.AsyncClient() as client:
-        for sub in subs.data:
-            c = sub.get("clients") or {}
-            tg_id = c.get("telegram_chat_id")
-            if not tg_id:
-                continue
-            try:
-                r = await client.post(f"{TELEGRAM_API}/sendMessage", json={
-                    "chat_id": tg_id, "text": msg, "parse_mode": "Markdown"
-                }, timeout=10)
-                sent = r.status_code == 200
-                err  = None if sent else r.text
-            except Exception as e:
-                sent = False; err = str(e)
-            try:
-                supabase.table("notifications").insert({
-                    "signal_id": signal_id, "client_id": sub["client_id"],
-                    "channel": "telegram", "sent": sent,
-                    "sent_at": datetime.utcnow().isoformat() if sent else None,
-                    "error": err,
-                }).execute()
-            except:
-                pass
 
 def get_user(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
