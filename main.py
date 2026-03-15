@@ -132,13 +132,15 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
     if service_code not in ["vanilla_monthly", "forex", "indices"]:
         return
     try:
+        symbol = parsed.get("symbol", "")
+
         if parsed["signal_type"] == "OPEN":
             insert_data = {
                 "service_id": service_id,
                 "direction":  parsed.get("direction"),
                 "status":     "OPEN",
                 "opened_at":  datetime.utcnow().isoformat(),
-                "notes":      f"Auto - {parsed.get('symbol', service_code)} {datetime.utcnow().strftime('%d/%m/%Y %H:%M')}",
+                "notes":      f"Auto - {symbol or service_code} {datetime.utcnow().strftime('%d/%m/%Y %H:%M')}",
             }
             if parsed.get("strike"):     insert_data["strike"]           = parsed["strike"]
             if parsed.get("price"):      insert_data["strike"]           = parsed["price"]
@@ -147,11 +149,30 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
             supabase.table("trades").insert(insert_data).execute()
 
         elif parsed["signal_type"] == "CLOSE":
-            q = supabase.table("trades").select("id")                .eq("service_id", service_id).eq("status", "OPEN")                .order("opened_at", desc=True).limit(1).execute()
-            if q.data:
-                update_data = {"status": "CLOSED", "closed_at": datetime.utcnow().isoformat()}
+            # Cerca la trade OPEN con il simbolo corretto
+            q = supabase.table("trades").select("id")                .eq("service_id", service_id)                .eq("status", "OPEN")                .order("opened_at", desc=True)                .execute()
+
+            trade_id = None
+            if q.data and symbol:
+                # Cerca SOLO per simbolo esatto nel campo notes
+                for trade in q.data:
+                    notes = trade.get("notes", "") or ""
+                    if symbol.upper() in notes.upper():
+                        trade_id = trade["id"]
+                        break
+                # Se simbolo non trovato, NON chiudere nulla
+                if not trade_id:
+                    print(f"Close signal for {symbol} but no matching OPEN trade found - skipping")
+                    return
+
+            if trade_id:
+                update_data = {
+                    "status":    "CLOSED",
+                    "closed_at": datetime.utcnow().isoformat(),
+                }
                 if parsed.get("drawdown_max"): update_data["drawdown_max"] = parsed["drawdown_max"]
-                supabase.table("trades").update(update_data).eq("id", q.data[0]["id"]).execute()
+                if parsed.get("pnl"):          update_data["pnl"] = parsed["pnl"]
+                supabase.table("trades").update(update_data).eq("id", trade_id).execute()
     except Exception as e:
         print(f"Auto trade error: {e}")
 
