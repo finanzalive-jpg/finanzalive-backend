@@ -247,7 +247,7 @@ async def create_client(data: dict):
 @app.get("/admin/clients", dependencies=[Depends(require_admin)])
 async def list_clients():
     return supabase.table("clients")\
-        .select("*, subscriptions(active, services(name,code))").execute().data
+       .select("*, subscriptions(active, expires_at, amount, notes, services(name,code))").execute().data 
 
 @app.patch("/admin/subscription/{client_id}/{service_code}", dependencies=[Depends(require_admin)])
 async def toggle_sub(client_id: str, service_code: str, active: bool):
