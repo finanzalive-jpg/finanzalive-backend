@@ -45,10 +45,11 @@ CHANNEL_SERVICE_MAP = {
 def parse_signal(text: str) -> dict:
     data = {"signal_type": "INFO", "direction": None, "strike": None,
             "strike_pct": None, "premium": None, "drawdown_max": None, "pnl": None}
+    text = text.replace('\n', ' ').replace('\r', ' ')
     t = text.upper()
 
     # Formato vanilla: "Alert for US500SELL PUT su US500 con strike: 5952.06 (Spot: 6649.2) Scadenza: Mensile"
-    if "STRIKE:" in t and ("SELL PUT" in t or "BUY PUT" in t or "SCADENZA" in t):
+    if "STRIKE:" in t and ("SELL PUT" in t or "BUY PUT" in t or "SCADENZA" in t or "SELL_PUT" in t):
         data["signal_type"] = "OPEN"
         data["direction"] = "SELL_PUT" if "SELL PUT" in t else "BUY_PUT"
         m = re.search(r'STRIKE:\s*(\d+\.?\d*)', t)
