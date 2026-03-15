@@ -273,5 +273,6 @@ async def renew_sub(client_id: str, service_code: str, data: dict):
     return {"ok": True}
 
 @app.get("/health")
+@app.head("/health")
 async def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
