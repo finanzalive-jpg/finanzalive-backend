@@ -47,7 +47,34 @@ def parse_signal(text: str) -> dict:
             "strike_pct": None, "premium": None, "drawdown_max": None, "pnl": None}
     t = text.upper()
 
-    if any(w in t for w in ["APERTURA","SELL_PUT","BUY_PUT","OPEN","ENTRY","LONG","BUY"]):
+    # Formato vanilla: "Alert for US500SELL PUT su US500 con strike: 5952.06 (Spot: 6649.2) Scadenza: Mensile"
+    if "STRIKE:" in t and ("SELL PUT" in t or "BUY PUT" in t or "SCADENZA" in t):
+        data["signal_type"] = "OPEN"
+        data["direction"] = "SELL_PUT" if "SELL PUT" in t else "BUY_PUT"
+        m = re.search(r'STRIKE:\s*(\d+\.?\d*)', t)
+        if m: data["strike"] = float(m.group(1))
+        # Calcola OTM% da strike e spot
+        m_spot = re.search(r'SPOT:\s*(\d+\.?\d*)', t)
+        if m and m_spot:
+            strike = float(m.group(1))
+            spot = float(m_spot.group(1))
+            data["strike_pct"] = round(abs(spot - strike) / spot * 100, 2)
+            data["premium"] = round(data["strike_pct"] * 100, 2)
+        return data
+
+    # Formato chiusura vanilla: "CHIUSURA PUTSELL Strike: 5952.06 - Spot: ... - Max DD: 2.45%"
+    if "CHIUSURA PUTSELL" in t or "CHIUSURA PUTBUY" in t:
+        data["signal_type"] = "CLOSE"
+        data["direction"] = "SELL_PUT" if "PUTSELL" in t else "BUY_PUT"
+        m = re.search(r'STRIKE:\s*(\d+\.?\d*)', t)
+        if m: data["strike"] = float(m.group(1))
+        m = re.search(r'MAX DD:\s*(\d+\.?\d*)', t)
+        if m: data["drawdown_max"] = float(m.group(1))
+        data["pnl"] = 1 if "PROFITTO" in t else -1
+        return data
+
+    # Formati generici per altri servizi
+    if any(w in t for w in ["APERTURA","OPEN","ENTRY","LONG","BUY"]):
         data["signal_type"] = "OPEN"
         if "SELL_PUT" in t: data["direction"] = "SELL_PUT"
         elif "BUY_PUT" in t: data["direction"] = "BUY_PUT"
@@ -55,22 +82,51 @@ def parse_signal(text: str) -> dict:
         elif "BUY" in t or "LONG" in t: data["direction"] = "BUY"
         m = re.search(r'STRIKE[^\d]*(\d+\.?\d*)', t)
         if m: data["strike"] = float(m.group(1))
-        m = re.search(r'\((\d+\.?\d*)\s*%\)', text)
-        if m:
-            data["strike_pct"] = float(m.group(1))
-            data["premium"] = round(data["strike_pct"] * 100, 2)
 
-    elif any(w in t for w in ["CHIUSURA","PROFITTO","CLOSE","EXIT","PROFIT","TARGET","TP","SL"]):
+    elif any(w in t for w in ["CHIUSURA","PROFITTO","CLOSE","EXIT","PROFIT","TP","SL"]):
         data["signal_type"] = "CLOSE"
-        m = re.search(r'DRAWDOWN[^\d]*(\d+\.?\d*)', t)
+        m = re.search(r'MAX DD[^\d]*(\d+\.?\d*)', t)
         if m: data["drawdown_max"] = float(m.group(1))
-        m = re.search(r'[+\-](\d+\.?\d*)', text)
-        if m: data["pnl"] = float(m.group(1))
 
     elif any(w in t for w in ["TRIGGER","COPERTURA","ALERT","WARNING","ATTENZIONE"]):
         data["signal_type"] = "ALERT"
 
     return data
+
+
+async def auto_update_trades(service_id: int, service_code: str, parsed: dict, text: str):
+    """Aggiorna automaticamente la tabella trades per vanilla mensile"""
+    if service_code != "vanilla_monthly":
+        return
+
+    try:
+        if parsed["signal_type"] == "OPEN" and parsed["strike"]:
+            # Crea nuova riga OPEN in trades
+            supabase.table("trades").insert({
+                "service_id": service_id,
+                "direction": parsed["direction"],
+                "strike": parsed["strike"],
+                "strike_pct": parsed["strike_pct"],
+                "premium_collected": parsed["premium"],
+                "status": "OPEN",
+                "opened_at": datetime.utcnow().isoformat(),
+                "notes": f"Auto - {datetime.utcnow().strftime('%b %Y')}",
+            }).execute()
+
+        elif parsed["signal_type"] == "CLOSE" and parsed["strike"]:
+            # Trova l'ultima operazione OPEN e chiudila
+            open_trade = supabase.table("trades")                .select("id")                .eq("service_id", service_id)                .eq("status", "OPEN")                .order("opened_at", desc=True)                .limit(1).execute()
+
+            if open_trade.data:
+                trade_id = open_trade.data[0]["id"]
+                update_data = {
+                    "status": "CLOSED",
+                    "closed_at": datetime.utcnow().isoformat(),
+                }
+                if parsed["drawdown_max"]: update_data["drawdown_max"] = parsed["drawdown_max"]
+                supabase.table("trades").update(update_data)                    .eq("id", trade_id).execute()
+    except Exception as e:
+        print(f"Auto trade update error: {e}")
 
 @app.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
@@ -123,6 +179,7 @@ async def telegram_webhook(request: Request):
         return {"ok": True}
 
     await notify_subscribers(service_id, signal_id, text, service_code)
+    await auto_update_trades(service_id, service_code, parsed, text)
     return {"ok": True}
 
 async def notify_subscribers(service_id, signal_id, text, service_code):
@@ -247,7 +304,7 @@ async def create_client(data: dict):
 @app.get("/admin/clients", dependencies=[Depends(require_admin)])
 async def list_clients():
     return supabase.table("clients")\
-       .select("*, subscriptions(active, expires_at, amount, notes, services(name,code))").execute().data 
+        .select("*, subscriptions(active, services(name,code))").execute().data
 
 @app.patch("/admin/subscription/{client_id}/{service_code}", dependencies=[Depends(require_admin)])
 async def toggle_sub(client_id: str, service_code: str, active: bool):
@@ -273,6 +330,5 @@ async def renew_sub(client_id: str, service_code: str, data: dict):
     return {"ok": True}
 
 @app.get("/health")
-@app.head("/health")
 async def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
