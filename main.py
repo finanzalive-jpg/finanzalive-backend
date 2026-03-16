@@ -417,6 +417,24 @@ async def get_quotes():
                 results.append({"name": name, "price": 0, "change": 0, "up": True, "error": True})
     return results
 
+
+@app.get("/api/news")
+async def get_news():
+    return supabase.table("news").select("*").eq("active", True).order("created_at", desc=True).limit(10).execute().data
+
+@app.post("/admin/news", dependencies=[Depends(require_admin)])
+async def create_news(data: dict):
+    supabase.table("news").insert({
+        "message": data["message"],
+        "active": True
+    }).execute()
+    return {"ok": True}
+
+@app.delete("/admin/news/{news_id}", dependencies=[Depends(require_admin)])
+async def delete_news(news_id: int):
+    supabase.table("news").update({"active": False}).eq("id", news_id).execute()
+    return {"ok": True}
+
 @app.get("/health")
 @app.head("/health")
 async def health():
