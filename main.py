@@ -376,6 +376,47 @@ async def renew_sub(client_id: str, service_code: str, data: dict):
 async def admin_signals(limit: int = 100):
     return supabase.table("signals").select("*, services(name)")        .order("created_at", desc=True).limit(limit).execute().data
 
+
+@app.get("/api/quotes")
+async def get_quotes():
+    """Recupera quotazioni mercati in tempo reale via Yahoo Finance"""
+    symbols = {
+        "S&P 500":   "%5EGSPC",
+        "Nasdaq":    "%5EIXIC",
+        "Dow Jones": "%5EDJI",
+        "DAX":       "%5EGDAXI",
+        "Nikkei":    "%5EN225",
+        "UK 100":    "%5EFTSE",
+        "EUR/USD":   "EURUSD%3DX",
+        "Oro":       "GC%3DF",
+        "Petrolio":  "CL%3DF",
+        "Bitcoin":   "BTC-USD",
+        "VIX":       "%5EVIX",
+        "BTP 10Y":   "BTP10Y%3DX",
+    }
+    results = []
+    async with httpx.AsyncClient(timeout=8) as client:
+        for name, sym in symbols.items():
+            try:
+                r = await client.get(
+                    f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=2d",
+                    headers={"User-Agent": "Mozilla/5.0"}
+                )
+                d = r.json()
+                meta = d["chart"]["result"][0]["meta"]
+                price = meta.get("regularMarketPrice", 0)
+                prev  = meta.get("previousClose") or meta.get("chartPreviousClose", price)
+                chg   = ((price - prev) / prev * 100) if prev else 0
+                results.append({
+                    "name":   name,
+                    "price":  round(price, 4),
+                    "change": round(chg, 2),
+                    "up":     chg >= 0
+                })
+            except:
+                results.append({"name": name, "price": 0, "change": 0, "up": True, "error": True})
+    return results
+
 @app.get("/health")
 @app.head("/health")
 async def health():
