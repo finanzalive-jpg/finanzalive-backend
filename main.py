@@ -150,17 +150,19 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
 
         elif parsed["signal_type"] == "CLOSE":
             # Cerca la trade OPEN con il simbolo corretto
-            q = supabase.table("trades").select("id")                .eq("service_id", service_id)                .eq("status", "OPEN")                .order("opened_at", desc=True)                .execute()
+            q = supabase.table("trades").select("id, strike, direction")                .eq("service_id", service_id)                .eq("status", "OPEN")                .order("opened_at", desc=True)                .execute()
 
             trade_id = None
+            trade_entry = None
+            trade_direction = None
             if q.data and symbol:
-                # Cerca SOLO per simbolo esatto nel campo notes
                 for trade in q.data:
                     notes = trade.get("notes", "") or ""
                     if symbol.upper() in notes.upper():
                         trade_id = trade["id"]
+                        trade_entry = trade.get("strike")
+                        trade_direction = trade.get("direction")
                         break
-                # Se simbolo non trovato, NON chiudere nulla
                 if not trade_id:
                     print(f"Close signal for {symbol} but no matching OPEN trade found - skipping")
                     return
@@ -171,7 +173,20 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
                     "closed_at": datetime.utcnow().isoformat(),
                 }
                 if parsed.get("drawdown_max"): update_data["drawdown_max"] = parsed["drawdown_max"]
-                if parsed.get("pnl"):          update_data["pnl"] = parsed["pnl"]
+
+                # Calcola PnL da prezzo ingresso e uscita
+                exit_price = parsed.get("price")
+                if exit_price and trade_entry:
+                    entry = float(trade_entry)
+                    direction = trade_direction or parsed.get("direction", "")
+                    if direction in ["BUY", "BUY_PUT"]:
+                        pnl = round(exit_price - entry, 2)
+                    else:  # SELL
+                        pnl = round(entry - exit_price, 2)
+                    update_data["pnl"] = pnl
+                elif parsed.get("pnl"):
+                    update_data["pnl"] = parsed["pnl"]
+
                 supabase.table("trades").update(update_data).eq("id", trade_id).execute()
     except Exception as e:
         print(f"Auto trade error: {e}")
