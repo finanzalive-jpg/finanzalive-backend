@@ -110,19 +110,24 @@ def parse_signal(text: str) -> dict:
         return data
 
     # FOREX ingresso
-    m = re.search(r"ALERT FOR ([A-Z]{6})\s+(BUY|SELL)", t)
-    if m and "CHIUSURA" not in t and "SCALPING" not in t:
+    # Supporta: "AUDCHF BUY", "EURUSD 🚀 SELL", "AUDCHF  BUY" (doppio spazio)
+    m_sym = re.search(r"ALERT FOR ([A-Z]{6,7})", t)
+    m_dir = re.search(r"\b(BUY|SELL)\b", t)
+    if m_sym and m_dir and "CHIUSURA" not in t and "SCALPING" not in t and "CLOSE" not in t.split()[0]:
         data["signal_type"] = "OPEN"
-        data["symbol"]    = m.group(1)
-        data["direction"] = m.group(2)
+        data["symbol"]    = m_sym.group(1)
+        data["direction"] = m_dir.group(1)
         m_tp = re.search(r"TP:\s*([\d\.]+)", t)
         if m_tp: data["tp"] = float(m_tp.group(1))
+        m_ap = re.search(r"APERTURA:\s*([\d,\.]+)", t)
+        if m_ap: data["price"] = float(m_ap.group(1).replace(",",""))
         return data
 
     # FALLBACK
     if any(w in t for w in ["APERTURA", "OPEN", "ENTRY"]): data["signal_type"] = "OPEN"
     elif any(w in t for w in ["CHIUSURA", "CLOSE", "EXIT"]): data["signal_type"] = "CLOSE"
-    elif any(w in t for w in ["TRIGGER", "ALERT", "WARNING"]): data["signal_type"] = "ALERT"
+    elif any(w in t for w in ["TRIGGER", "WARNING"]): data["signal_type"] = "ALERT"
+    # NOTA: "ALERT" rimosso dal fallback perché appare in tutti i messaggi "Alert for..."
     return data
 
 # ─────────────────────────────────────────────
