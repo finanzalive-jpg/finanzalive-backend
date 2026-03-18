@@ -346,18 +346,19 @@ async def get_trades(service_code: str = None, user=Depends(get_user)):
         if service_code not in allowed_codes:
             raise HTTPException(status_code=403, detail="Non abbonato")
         svc = supabase.table("services").select("id").eq("code", service_code).single().execute()
-        # Supabase limita a 1000 righe - fetch tutto con range
+        # Supabase limita a 1000 righe - fetch tutto con range in ordine crescente
         all_data = []
         offset = 0
         while True:
             batch = supabase.table("trades").select("*, services(code,name)") \
-                .eq("service_id", svc.data["id"]).order("opened_at", desc=True) \
+                .eq("service_id", svc.data["id"]).order("opened_at", desc=False) \
                 .range(offset, offset+999).execute()
             if not batch.data: break
             all_data.extend(batch.data)
             if len(batch.data) < 1000: break
             offset += 1000
-        class Result: data = all_data
+        # Inverti per mostrare i più recenti prima nella tabella
+        class Result: data = list(reversed(all_data))
         result = Result()
     else:
         result = supabase.table("trades").select("*, services(code,name)")            .in_("service_id", allowed_ids).order("opened_at", desc=True).execute()
