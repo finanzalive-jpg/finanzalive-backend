@@ -390,7 +390,19 @@ async def list_clients():
 @app.patch("/admin/subscription/{client_id}/{service_code}", dependencies=[Depends(require_admin)])
 async def toggle_sub(client_id: str, service_code: str, active: bool):
     svc = supabase.table("services").select("id").eq("code", service_code).single().execute()
-    supabase.table("subscriptions").update({"active": active})        .eq("client_id", client_id).eq("service_id", svc.data["id"]).execute()
+    service_id = svc.data["id"]
+    # Controlla se la subscription esiste già
+    existing = supabase.table("subscriptions").select("id")        .eq("client_id", client_id).eq("service_id", service_id).execute()
+    if existing.data:
+        # Aggiorna quella esistente
+        supabase.table("subscriptions").update({"active": active})            .eq("client_id", client_id).eq("service_id", service_id).execute()
+    else:
+        # Crea nuova subscription
+        supabase.table("subscriptions").insert({
+            "client_id": client_id,
+            "service_id": service_id,
+            "active": active,
+        }).execute()
     return {"ok": True}
 
 @app.patch("/admin/subscription/{client_id}/{service_code}/renew", dependencies=[Depends(require_admin)])
