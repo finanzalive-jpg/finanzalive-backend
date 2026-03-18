@@ -357,8 +357,7 @@ async def get_trades(service_code: str = None, user=Depends(get_user)):
             all_data.extend(batch.data)
             if len(batch.data) < 1000: break
             offset += 1000
-        # Inverti per mostrare i più recenti prima nella tabella
-        class Result: data = list(reversed(all_data))
+        class Result: data = all_data  # già in ordine crescente (desc=False)
         result = Result()
     else:
         result = supabase.table("trades").select("*, services(code,name)")            .in_("service_id", allowed_ids).order("opened_at", desc=True).execute()
