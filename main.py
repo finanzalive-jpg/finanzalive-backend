@@ -38,6 +38,7 @@ CHANNEL_SERVICE_MAP = {
     -1002517239703: "vanilla_monthly",
     -1002870950901: "vanilla_weekly",
     -1002850487439: "forex",
+    -1002628465268: "gold",
 }
 
 INDEX_SYMBOLS = ["US100", "US30", "DE40", "JPN225"]
@@ -81,12 +82,20 @@ def parse_signal(text: str) -> dict:
         return data
 
     # INDICI chiusura
+    # Formato: "Alert for JPN225\nCHIUSURA SELL JPN225 Uscita: 54,259.37"
     for sym in INDEX_SYMBOLS:
         if sym + "CHIUSURA" in t or (sym in t and "CHIUSURA" in t):
             data["signal_type"] = "CLOSE"
             data["symbol"] = sym
             m_dir = re.search(r"CHIUSURA\s+(BUY|SELL)", t)
             if m_dir: data["direction"] = m_dir.group(1)
+            else:
+                m_dir2 = re.search(r"\b(BUY|SELL)\b", t)
+                if m_dir2: data["direction"] = m_dir2.group(1)
+            # Estrai prezzo uscita per calcolo PnL
+            m_exit = re.search(r"USCITA:\s*([\d,\.]+)", t)
+            if m_exit:
+                data["price"] = float(m_exit.group(1).replace(",", ""))
             return data
 
     # INDICI ingresso
@@ -113,6 +122,7 @@ def parse_signal(text: str) -> dict:
     # Supporta: "AUDCHF BUY", "EURUSD 🚀 SELL", "AUDCHF  BUY" (doppio spazio)
     m_sym = re.search(r"ALERT FOR ([A-Z]{6,7})", t)
     m_dir = re.search(r"\b(BUY|SELL)\b", t)
+    print(f"FOREX check: sym={m_sym.group(1) if m_sym else None} dir={m_dir.group(1) if m_dir else None} CHIUSURA={'CHIUSURA' in t} SCALPING={'SCALPING' in t}")
     if m_sym and m_dir and "CHIUSURA" not in t and "SCALPING" not in t and "CLOSE" not in t.split()[0]:
         data["signal_type"] = "OPEN"
         data["symbol"]    = m_sym.group(1)
@@ -124,6 +134,7 @@ def parse_signal(text: str) -> dict:
         return data
 
     # FALLBACK
+    print(f"FALLBACK reached for: {t[:80]}")
     if any(w in t for w in ["APERTURA", "OPEN", "ENTRY"]): data["signal_type"] = "OPEN"
     elif any(w in t for w in ["CHIUSURA", "CLOSE", "EXIT"]): data["signal_type"] = "CLOSE"
     elif any(w in t for w in ["TRIGGER", "WARNING"]): data["signal_type"] = "ALERT"
@@ -134,7 +145,7 @@ def parse_signal(text: str) -> dict:
 # AUTO AGGIORNAMENTO TRADES
 # ─────────────────────────────────────────────
 async def auto_update_trades(service_id: int, service_code: str, parsed: dict, text: str):
-    if service_code not in ["vanilla_monthly", "forex", "indices"]:
+    if service_code not in ["vanilla_monthly", "forex", "indices", "gold"]:
         return
     try:
         symbol = parsed.get("symbol", "")
