@@ -491,6 +491,69 @@ async def delete_news(news_id: int):
     supabase.table("news").update({"active": False}).eq("id", news_id).execute()
     return {"ok": True}
 
+
+@app.post("/mt4/trade")
+async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
+    """Riceve operazioni da EA MT4"""
+    if x_admin_secret != ADMIN_SECRET:
+        raise HTTPException(status_code=403, detail="Accesso negato")
+    
+    try:
+        data = await request.json()
+    except:
+        raise HTTPException(status_code=400, detail="JSON non valido")
+    
+    action       = data.get("action")
+    service_code = data.get("service_code", "fund_paam")
+    ticket       = data.get("ticket")
+    symbol       = data.get("symbol", "")
+    direction    = data.get("direction")
+    
+    try:
+        svc = supabase.table("services").select("id").eq("code", service_code).single().execute()
+        service_id = svc.data["id"]
+    except:
+        raise HTTPException(status_code=404, detail=f"Servizio {service_code} non trovato")
+    
+    if action == "OPEN":
+        price     = data.get("price", 0)
+        open_time = data.get("open_time")
+        lots      = data.get("lots", 1)
+        
+        # Controlla se il ticket esiste già
+        existing = supabase.table("trades").select("id")            .eq("service_id", service_id)            .eq("notes", f"MT4-{ticket}")            .execute()
+        
+        if not existing.data:
+            supabase.table("trades").insert({
+                "service_id": service_id,
+                "direction":  direction,
+                "strike":     price,
+                "status":     "OPEN",
+                "opened_at":  open_time or datetime.utcnow().isoformat(),
+                "notes":      f"MT4-{ticket} {symbol}",
+            }).execute()
+            print(f"MT4 OPEN: {symbol} {direction} @ {price} ticket={ticket}")
+    
+    elif action == "CLOSE":
+        close_price = data.get("close_price", 0)
+        pnl         = data.get("pnl", 0)
+        close_time  = data.get("close_time")
+        
+        # Trova il trade aperto con questo ticket
+        existing = supabase.table("trades").select("id")            .eq("service_id", service_id)            .eq("status", "OPEN")            .like("notes", f"MT4-{ticket}%")            .execute()
+        
+        if existing.data:
+            supabase.table("trades").update({
+                "status":    "CLOSED",
+                "closed_at": close_time or datetime.utcnow().isoformat(),
+                "pnl":       round(pnl, 2),
+            }).eq("id", existing.data[0]["id"]).execute()
+            print(f"MT4 CLOSE: ticket={ticket} PnL={pnl}")
+        else:
+            print(f"MT4 CLOSE: ticket={ticket} not found in DB")
+    
+    return {"ok": True, "action": action, "ticket": ticket}
+
 @app.get("/health")
 @app.head("/health")
 async def health():
