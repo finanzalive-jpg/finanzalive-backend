@@ -149,6 +149,7 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
         return
     try:
         symbol = parsed.get("symbol", "")
+        print(f"AUTO_TRADE: service={service_code} type={parsed['signal_type']} symbol={symbol} price={parsed.get('price')} direction={parsed.get('direction')}")
 
         if parsed["signal_type"] == "OPEN":
             insert_data = {
