@@ -145,7 +145,7 @@ def parse_signal(text: str) -> dict:
 # AUTO AGGIORNAMENTO TRADES
 # ─────────────────────────────────────────────
 async def auto_update_trades(service_id: int, service_code: str, parsed: dict, text: str):
-    if service_code not in ["vanilla_monthly", "forex", "indices", "gold"]:
+    if service_code not in ["vanilla_monthly", "forex", "indices", "gold", "fund_paam"]:
         return
     try:
         symbol = parsed.get("symbol", "")
