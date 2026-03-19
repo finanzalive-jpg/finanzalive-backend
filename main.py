@@ -521,7 +521,7 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
         lots      = data.get("lots", 1)
         
         # Controlla se il ticket esiste già
-        existing = supabase.table("trades").select("id")            .eq("service_id", service_id)            .eq("notes", f"MT4-{ticket}")            .execute()
+        existing = supabase.table("trades").select("id")            .eq("service_id", service_id)            .like("notes", f"MT4-{ticket}%")            .execute()
         
         if not existing.data:
             supabase.table("trades").insert({
@@ -532,6 +532,17 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
                 "opened_at":  open_time or datetime.utcnow().isoformat(),
                 "notes":      f"MT4-{ticket} {symbol}",
             }).execute()
+            # Salva anche in signals per segnali live
+            msg = f"Alert for {symbol} {direction} {symbol} Apertura: {price}"
+            try:
+                sig = supabase.table("signals").insert({
+                    "service_id":   service_id,
+                    "message_text": msg,
+                    "signal_type":  "OPEN",
+                    "direction":    direction,
+                    "strike":       price,
+                }).execute()
+            except: pass
             print(f"MT4 OPEN: {symbol} {direction} @ {price} ticket={ticket}")
     
     elif action == "CLOSE":
@@ -548,6 +559,18 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
                 "closed_at": close_time or datetime.utcnow().isoformat(),
                 "pnl":       round(pnl, 2),
             }).eq("id", existing.data[0]["id"]).execute()
+            # Salva anche in signals per segnali live
+            msg = f"Alert for {symbol} Chiusura {direction} {symbol} Uscita: {close_price}"
+            try:
+                supabase.table("signals").insert({
+                    "service_id":   service_id,
+                    "message_text": msg,
+                    "signal_type":  "CLOSE",
+                    "direction":    direction,
+                    "strike":       close_price,
+                    "pnl":          round(pnl, 2),
+                }).execute()
+            except: pass
             print(f"MT4 CLOSE: ticket={ticket} PnL={pnl}")
         else:
             print(f"MT4 CLOSE: ticket={ticket} not found in DB")
