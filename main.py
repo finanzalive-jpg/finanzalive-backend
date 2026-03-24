@@ -82,9 +82,8 @@ def parse_signal(text: str) -> dict:
         return data
 
     # INDICI chiusura
-    # Formato: "Alert for JPN225\nCHIUSURA SELL JPN225 Uscita: 54,259.37"
     for sym in INDEX_SYMBOLS:
-        if sym + "CHIUSURA" in t or (sym in t and "CHIUSURA" in t):
+        if sym in t and "CHIUSURA" in t:
             data["signal_type"] = "CLOSE"
             data["symbol"] = sym
             m_dir = re.search(r"CHIUSURA\s+(BUY|SELL)", t)
@@ -92,7 +91,6 @@ def parse_signal(text: str) -> dict:
             else:
                 m_dir2 = re.search(r"\b(BUY|SELL)\b", t)
                 if m_dir2: data["direction"] = m_dir2.group(1)
-            # Estrai prezzo uscita per calcolo PnL
             m_exit = re.search(r"USCITA:\s*([\d,\.]+)", t)
             if m_exit:
                 data["price"] = float(m_exit.group(1).replace(",", ""))
@@ -110,7 +108,19 @@ def parse_signal(text: str) -> dict:
             if m_price: data["price"] = float(m_price.group(1).replace(",", ""))
             return data
 
-    # FOREX chiusura
+    # ── FIX #1: FOREX chiusura — formato "Alert for AUDCHF\nCLOSE SELL AUDCHF.ecn"
+    # Va controllato PRIMA del blocco FOREX ingresso
+    m_sym_close = re.search(r"ALERT FOR ([A-Z]{6,7})", t)
+    if m_sym_close and "CLOSE" in t:
+        m_dir_close = re.search(r"CLOSE\s+(BUY|SELL)", t)
+        if m_dir_close:
+            data["signal_type"] = "CLOSE"
+            data["symbol"]    = m_sym_close.group(1)
+            data["direction"] = m_dir_close.group(1)
+            print(f"FOREX CLOSE parsed: sym={data['symbol']} dir={data['direction']}")
+            return data
+
+    # FOREX chiusura — formato vecchio "ALERT FOR AUDCHFCLOSE BUY/SELL"
     m = re.search(r"ALERT FOR ([A-Z]{6})CLOSE\s+(BUY|SELL)", t)
     if m:
         data["signal_type"] = "CLOSE"
@@ -119,11 +129,10 @@ def parse_signal(text: str) -> dict:
         return data
 
     # FOREX ingresso
-    # Supporta: "AUDCHF BUY", "EURUSD 🚀 SELL", "AUDCHF  BUY" (doppio spazio)
     m_sym = re.search(r"ALERT FOR ([A-Z]{6,7})", t)
     m_dir = re.search(r"\b(BUY|SELL)\b", t)
     print(f"FOREX check: sym={m_sym.group(1) if m_sym else None} dir={m_dir.group(1) if m_dir else None} CHIUSURA={'CHIUSURA' in t} SCALPING={'SCALPING' in t}")
-    if m_sym and m_dir and "CHIUSURA" not in t and "SCALPING" not in t and "CLOSE" not in t.split()[0]:
+    if m_sym and m_dir and "CHIUSURA" not in t and "SCALPING" not in t and "CLOSE" not in t:
         data["signal_type"] = "OPEN"
         data["symbol"]    = m_sym.group(1)
         data["direction"] = m_dir.group(1)
@@ -138,7 +147,6 @@ def parse_signal(text: str) -> dict:
     if any(w in t for w in ["APERTURA", "OPEN", "ENTRY"]): data["signal_type"] = "OPEN"
     elif any(w in t for w in ["CHIUSURA", "CLOSE", "EXIT"]): data["signal_type"] = "CLOSE"
     elif any(w in t for w in ["TRIGGER", "WARNING"]): data["signal_type"] = "ALERT"
-    # NOTA: "ALERT" rimosso dal fallback perché appare in tutti i messaggi "Alert for..."
     return data
 
 # ─────────────────────────────────────────────
@@ -148,41 +156,57 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
     if service_code not in ["vanilla_monthly", "forex", "indices", "gold", "fund_paam"]:
         return
     try:
-        symbol = parsed.get("symbol", "")
+        symbol = parsed.get("symbol", "") or ""
         print(f"AUTO_TRADE: service={service_code} type={parsed['signal_type']} symbol={symbol} price={parsed.get('price')} direction={parsed.get('direction')}")
 
         if parsed["signal_type"] == "OPEN":
+            # ── FIX #2: le notes includono SEMPRE il simbolo in formato fisso
+            # es. "Auto - DE40 16/03/2026 08:30" oppure "Auto - indices 16/03/2026 08:30"
+            note_label = symbol if symbol else service_code
             insert_data = {
                 "service_id": service_id,
                 "direction":  parsed.get("direction"),
                 "status":     "OPEN",
                 "opened_at":  datetime.utcnow().isoformat(),
-                "notes":      f"Auto - {symbol or service_code} {datetime.utcnow().strftime('%d/%m/%Y %H:%M')}",
+                "notes":      f"Auto - {note_label} {datetime.utcnow().strftime('%d/%m/%Y %H:%M')}",
             }
             if parsed.get("strike"):     insert_data["strike"]           = parsed["strike"]
             if parsed.get("price"):      insert_data["strike"]           = parsed["price"]
             if parsed.get("strike_pct"): insert_data["strike_pct"]       = parsed["strike_pct"]
             if parsed.get("premium"):    insert_data["premium_collected"] = parsed["premium"]
             supabase.table("trades").insert(insert_data).execute()
+            print(f"AUTO_TRADE OPEN inserted: {note_label} @ {parsed.get('price') or parsed.get('strike')}")
 
         elif parsed["signal_type"] == "CLOSE":
-            # Cerca la trade OPEN con il simbolo corretto
-            q = supabase.table("trades").select("id, strike, direction")                .eq("service_id", service_id)                .eq("status", "OPEN")                .order("opened_at", desc=True)                .execute()
+            # Cerca la trade OPEN con il simbolo corretto nelle notes
+            q = supabase.table("trades").select("id, strike, direction") \
+                .eq("service_id", service_id) \
+                .eq("status", "OPEN") \
+                .order("opened_at", desc=True) \
+                .execute()
 
             trade_id = None
             trade_entry = None
             trade_direction = None
-            if q.data and symbol:
-                for trade in q.data:
-                    notes = trade.get("notes", "") or ""
-                    if symbol.upper() in notes.upper():
-                        trade_id = trade["id"]
-                        trade_entry = trade.get("strike")
-                        trade_direction = trade.get("direction")
-                        break
-                if not trade_id:
-                    print(f"Close signal for {symbol} but no matching OPEN trade found - skipping")
-                    return
+
+            if q.data:
+                if symbol:
+                    # Match per simbolo nelle notes
+                    for trade in q.data:
+                        notes = trade.get("notes", "") or ""
+                        if symbol.upper() in notes.upper():
+                            trade_id = trade["id"]
+                            trade_entry = trade.get("strike")
+                            trade_direction = trade.get("direction")
+                            break
+                    if not trade_id:
+                        print(f"AUTO_TRADE CLOSE: no OPEN trade found for symbol={symbol} in service={service_code}")
+                        return
+                else:
+                    # Nessun simbolo (vanilla/gold): prende il più recente
+                    trade_id = q.data[0]["id"]
+                    trade_entry = q.data[0].get("strike")
+                    trade_direction = q.data[0].get("direction")
 
             if trade_id:
                 update_data = {
@@ -198,13 +222,18 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
                     direction = trade_direction or parsed.get("direction", "")
                     if direction in ["BUY", "BUY_PUT"]:
                         pnl = round(exit_price - entry, 2)
-                    else:  # SELL
+                    else:  # SELL / SELL_PUT
                         pnl = round(entry - exit_price, 2)
                     update_data["pnl"] = pnl
+                    print(f"AUTO_TRADE PnL: entry={entry} exit={exit_price} dir={direction} pnl={pnl}")
                 elif parsed.get("pnl"):
                     update_data["pnl"] = parsed["pnl"]
 
                 supabase.table("trades").update(update_data).eq("id", trade_id).execute()
+                print(f"AUTO_TRADE CLOSED: id={trade_id} symbol={symbol} pnl={update_data.get('pnl')}")
+            else:
+                print(f"AUTO_TRADE CLOSE: no open trade found for service={service_code}")
+
     except Exception as e:
         print(f"Auto trade error: {e}")
 
@@ -269,7 +298,9 @@ async def telegram_webhook(request: Request):
 # ─────────────────────────────────────────────
 async def notify_subscribers(service_id: int, signal_id: int, text: str, service_code: str):
     try:
-        subs = supabase.table("subscriptions")            .select("client_id, clients(telegram_chat_id)")            .eq("service_id", service_id).eq("active", True).execute()
+        subs = supabase.table("subscriptions") \
+            .select("client_id, clients(telegram_chat_id)") \
+            .eq("service_id", service_id).eq("active", True).execute()
     except:
         return
 
@@ -326,28 +357,31 @@ def require_admin(x_admin_secret: str = Header(None)):
 # ─────────────────────────────────────────────
 @app.get("/api/signals")
 async def get_signals(service_code: str = None, limit: int = 50, user=Depends(get_user)):
-    subs = supabase.table("subscriptions")        .select("service_id, services(code)").eq("client_id", str(user.id)).eq("active", True).execute()
+    subs = supabase.table("subscriptions") \
+        .select("service_id, services(code)").eq("client_id", str(user.id)).eq("active", True).execute()
     allowed_codes = [s["services"]["code"] for s in subs.data]
     allowed_ids   = [s["service_id"] for s in subs.data]
     if service_code:
         if service_code not in allowed_codes:
             raise HTTPException(status_code=403, detail="Non abbonato")
         svc = supabase.table("services").select("id").eq("code", service_code).single().execute()
-        result = supabase.table("signals").select("*, services(code,name)")            .eq("service_id", svc.data["id"]).order("created_at", desc=True).limit(limit).execute()
+        result = supabase.table("signals").select("*, services(code,name)") \
+            .eq("service_id", svc.data["id"]).order("created_at", desc=True).limit(limit).execute()
     else:
-        result = supabase.table("signals").select("*, services(code,name)")            .in_("service_id", allowed_ids).order("created_at", desc=True).limit(limit).execute()
+        result = supabase.table("signals").select("*, services(code,name)") \
+            .in_("service_id", allowed_ids).order("created_at", desc=True).limit(limit).execute()
     return result.data
 
 @app.get("/api/trades")
 async def get_trades(service_code: str = None, user=Depends(get_user)):
-    subs = supabase.table("subscriptions")        .select("service_id, services(code)").eq("client_id", str(user.id)).eq("active", True).execute()
+    subs = supabase.table("subscriptions") \
+        .select("service_id, services(code)").eq("client_id", str(user.id)).eq("active", True).execute()
     allowed_ids   = [s["service_id"] for s in subs.data]
     allowed_codes = [s["services"]["code"] for s in subs.data]
     if service_code:
         if service_code not in allowed_codes:
             raise HTTPException(status_code=403, detail="Non abbonato")
         svc = supabase.table("services").select("id").eq("code", service_code).single().execute()
-        # Supabase limita a 1000 righe - fetch tutto con range in ordine crescente
         all_data = []
         offset = 0
         while True:
@@ -358,19 +392,23 @@ async def get_trades(service_code: str = None, user=Depends(get_user)):
             all_data.extend(batch.data)
             if len(batch.data) < 1000: break
             offset += 1000
-        class Result: data = all_data  # già in ordine crescente (desc=False)
+        class Result: data = all_data
         result = Result()
     else:
-        result = supabase.table("trades").select("*, services(code,name)")            .in_("service_id", allowed_ids).order("opened_at", desc=True).execute()
+        result = supabase.table("trades").select("*, services(code,name)") \
+            .in_("service_id", allowed_ids).order("opened_at", desc=True).execute()
     return result.data
 
 @app.get("/api/services")
 async def get_my_services(user=Depends(get_user)):
-    return supabase.table("subscriptions")        .select("active, expires_at, amount, notes, services(code,name,description)")        .eq("client_id", str(user.id)).execute().data
+    return supabase.table("subscriptions") \
+        .select("active, expires_at, amount, notes, services(code,name,description)") \
+        .eq("client_id", str(user.id)).execute().data
 
 @app.get("/api/profile")
 async def get_profile(user=Depends(get_user)):
-    return supabase.table("clients").select("id,full_name,email,active,created_at")        .eq("id", str(user.id)).single().execute().data
+    return supabase.table("clients").select("id,full_name,email,active,created_at") \
+        .eq("id", str(user.id)).single().execute().data
 
 # ─────────────────────────────────────────────
 # ADMIN API
@@ -398,19 +436,19 @@ async def create_client(data: dict):
 
 @app.get("/admin/clients", dependencies=[Depends(require_admin)])
 async def list_clients():
-    return supabase.table("clients")        .select("*, subscriptions(active, expires_at, amount, notes, services(name,code))").execute().data
+    return supabase.table("clients") \
+        .select("*, subscriptions(active, expires_at, amount, notes, services(name,code))").execute().data
 
 @app.patch("/admin/subscription/{client_id}/{service_code}", dependencies=[Depends(require_admin)])
 async def toggle_sub(client_id: str, service_code: str, active: bool):
     svc = supabase.table("services").select("id").eq("code", service_code).single().execute()
     service_id = svc.data["id"]
-    # Controlla se la subscription esiste già
-    existing = supabase.table("subscriptions").select("id")        .eq("client_id", client_id).eq("service_id", service_id).execute()
+    existing = supabase.table("subscriptions").select("id") \
+        .eq("client_id", client_id).eq("service_id", service_id).execute()
     if existing.data:
-        # Aggiorna quella esistente
-        supabase.table("subscriptions").update({"active": active})            .eq("client_id", client_id).eq("service_id", service_id).execute()
+        supabase.table("subscriptions").update({"active": active}) \
+            .eq("client_id", client_id).eq("service_id", service_id).execute()
     else:
-        # Crea nuova subscription
         supabase.table("subscriptions").insert({
             "client_id": client_id,
             "service_id": service_id,
@@ -425,13 +463,14 @@ async def renew_sub(client_id: str, service_code: str, data: dict):
     if data.get("expires_at"): update_data["expires_at"] = data["expires_at"]
     if data.get("amount") is not None: update_data["amount"] = data["amount"]
     if data.get("notes") is not None: update_data["notes"] = data["notes"]
-    supabase.table("subscriptions").update(update_data)        .eq("client_id", client_id).eq("service_id", svc.data["id"]).execute()
+    supabase.table("subscriptions").update(update_data) \
+        .eq("client_id", client_id).eq("service_id", svc.data["id"]).execute()
     return {"ok": True}
 
 @app.get("/admin/signals", dependencies=[Depends(require_admin)])
 async def admin_signals(limit: int = 100):
-    return supabase.table("signals").select("*, services(name)")        .order("created_at", desc=True).limit(limit).execute().data
-
+    return supabase.table("signals").select("*, services(name)") \
+        .order("created_at", desc=True).limit(limit).execute().data
 
 @app.get("/api/quotes")
 async def get_quotes():
@@ -473,7 +512,6 @@ async def get_quotes():
                 results.append({"name": name, "price": 0, "change": 0, "up": True, "error": True})
     return results
 
-
 @app.get("/api/news")
 async def get_news():
     return supabase.table("news").select("*").eq("active", True).order("created_at", desc=True).limit(10).execute().data
@@ -491,38 +529,37 @@ async def delete_news(news_id: int):
     supabase.table("news").update({"active": False}).eq("id", news_id).execute()
     return {"ok": True}
 
-
 @app.post("/mt4/trade")
 async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
     """Riceve operazioni da EA MT4"""
     if x_admin_secret != ADMIN_SECRET:
         raise HTTPException(status_code=403, detail="Accesso negato")
-    
     try:
         data = await request.json()
     except:
         raise HTTPException(status_code=400, detail="JSON non valido")
-    
+
     action       = data.get("action")
     service_code = data.get("service_code", "fund_paam")
     ticket       = data.get("ticket")
     symbol       = data.get("symbol", "")
     direction    = data.get("direction")
-    
+
     try:
         svc = supabase.table("services").select("id").eq("code", service_code).single().execute()
         service_id = svc.data["id"]
     except:
         raise HTTPException(status_code=404, detail=f"Servizio {service_code} non trovato")
-    
+
     if action == "OPEN":
         price     = data.get("price", 0)
         open_time = data.get("open_time")
-        lots      = data.get("lots", 1)
-        
-        # Controlla se il ticket esiste già
-        existing = supabase.table("trades").select("id")            .eq("service_id", service_id)            .like("notes", f"MT4-{ticket}%")            .execute()
-        
+
+        existing = supabase.table("trades").select("id") \
+            .eq("service_id", service_id) \
+            .like("notes", f"MT4-{ticket}%") \
+            .execute()
+
         if not existing.data:
             supabase.table("trades").insert({
                 "service_id": service_id,
@@ -532,10 +569,9 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
                 "opened_at":  open_time or datetime.utcnow().isoformat(),
                 "notes":      f"MT4-{ticket} {symbol}",
             }).execute()
-            # Salva anche in signals per segnali live
             msg = f"Alert for {symbol} {direction} {symbol} Apertura: {price}"
             try:
-                sig = supabase.table("signals").insert({
+                supabase.table("signals").insert({
                     "service_id":   service_id,
                     "message_text": msg,
                     "signal_type":  "OPEN",
@@ -544,22 +580,24 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
                 }).execute()
             except: pass
             print(f"MT4 OPEN: {symbol} {direction} @ {price} ticket={ticket}")
-    
+
     elif action == "CLOSE":
         close_price = data.get("close_price", 0)
         pnl         = data.get("pnl", 0)
         close_time  = data.get("close_time")
-        
-        # Trova il trade aperto con questo ticket
-        existing = supabase.table("trades").select("id")            .eq("service_id", service_id)            .eq("status", "OPEN")            .like("notes", f"MT4-{ticket}%")            .execute()
-        
+
+        existing = supabase.table("trades").select("id") \
+            .eq("service_id", service_id) \
+            .eq("status", "OPEN") \
+            .like("notes", f"MT4-{ticket}%") \
+            .execute()
+
         if existing.data:
             supabase.table("trades").update({
                 "status":    "CLOSED",
                 "closed_at": close_time or datetime.utcnow().isoformat(),
                 "pnl":       round(pnl, 2),
             }).eq("id", existing.data[0]["id"]).execute()
-            # Salva anche in signals per segnali live
             msg = f"Alert for {symbol} Chiusura {direction} {symbol} Uscita: {close_price}"
             try:
                 supabase.table("signals").insert({
@@ -574,7 +612,7 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
             print(f"MT4 CLOSE: ticket={ticket} PnL={pnl}")
         else:
             print(f"MT4 CLOSE: ticket={ticket} not found in DB")
-    
+
     return {"ok": True, "action": action, "ticket": ticket}
 
 @app.get("/health")
