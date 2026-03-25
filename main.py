@@ -81,6 +81,35 @@ def parse_signal(text: str) -> dict:
         data["pnl"] = 1 if "PROFITTO" in t else -1
         return data
 
+    # GOLD ingresso
+    if "GOLD" in t and ("BUY" in t or "LONG" in t or "ACQUISTO" in t) and "CHIUSURA" not in t and "CLOSE" not in t:
+        data["signal_type"] = "OPEN"
+        data["symbol"] = "GOLD"
+        data["direction"] = "BUY"
+        m_price = re.search(r"(?:APERTURA|ENTRY|PREZZO|@)\s*:?\s*([\d,\.]+)", t)
+        if m_price: data["price"] = float(m_price.group(1).replace(",", ""))
+        return data
+
+    if "GOLD" in t and ("SELL" in t or "SHORT" in t or "VENDITA" in t) and "CHIUSURA" not in t and "CLOSE" not in t:
+        data["signal_type"] = "OPEN"
+        data["symbol"] = "GOLD"
+        data["direction"] = "SELL"
+        m_price = re.search(r"(?:APERTURA|ENTRY|PREZZO|@)\s*:?\s*([\d,\.]+)", t)
+        if m_price: data["price"] = float(m_price.group(1).replace(",", ""))
+        return data
+
+    # GOLD chiusura
+    if "GOLD" in t and ("CHIUSURA" in t or "CLOSE" in t or "EXIT" in t or "USCITA" in t):
+        data["signal_type"] = "CLOSE"
+        data["symbol"] = "GOLD"
+        m_dir = re.search(r"(BUY|SELL|LONG|SHORT)", t)
+        if m_dir:
+            d = m_dir.group(1)
+            data["direction"] = "BUY" if d in ("BUY", "LONG") else "SELL"
+        m_exit = re.search(r"(?:USCITA|EXIT|CLOSE|@)\s*:?\s*([\d,\.]+)", t)
+        if m_exit: data["price"] = float(m_exit.group(1).replace(",", ""))
+        return data
+
     # INDICI chiusura
     for sym in INDEX_SYMBOLS:
         if sym in t and "CHIUSURA" in t:
@@ -161,8 +190,8 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
 
         if parsed["signal_type"] == "OPEN":
             # ── FIX #2: le notes includono SEMPRE il simbolo in formato fisso
-            # es. "Auto - DE40 16/03/2026 08:30" oppure "Auto - indices 16/03/2026 08:30"
-            note_label = symbol if symbol else service_code
+            # es. "Auto - DE40 16/03/2026 08:30" oppure "Auto - GOLD 16/03/2026 08:30"
+            note_label = symbol if symbol else service_code.upper()
             insert_data = {
                 "service_id": service_id,
                 "direction":  parsed.get("direction"),
@@ -200,10 +229,16 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
                             trade_direction = trade.get("direction")
                             break
                     if not trade_id:
-                        print(f"AUTO_TRADE CLOSE: no OPEN trade found for symbol={symbol} in service={service_code}")
-                        return
+                        # Per gold: se nessun match per simbolo, prende il più recente
+                        if service_code == "gold":
+                            trade_id = q.data[0]["id"]
+                            trade_entry = q.data[0].get("strike")
+                            trade_direction = q.data[0].get("direction")
+                        else:
+                            print(f"AUTO_TRADE CLOSE: no OPEN trade found for symbol={symbol} in service={service_code}")
+                            return
                 else:
-                    # Nessun simbolo (vanilla/gold): prende il più recente
+                    # Nessun simbolo (vanilla): prende il più recente
                     trade_id = q.data[0]["id"]
                     trade_entry = q.data[0].get("strike")
                     trade_direction = q.data[0].get("direction")
