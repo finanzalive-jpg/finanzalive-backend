@@ -55,8 +55,31 @@ def parse_signal(text: str) -> dict:
     }
     t = text.upper()
 
-    # VANILLA MENSILE ingresso
-    if "STRIKE:" in t and ("SELL PUT" in t or "BUY PUT" in t or "SCADENZA" in t or "SELL_PUT" in t):
+    # VANILLA MENSILE chiusura — va controllata PRIMA dell'ingresso
+    if "CHIUSURA PUTSELL" in t or "CHIUSURA PUTBUY" in t:
+        data["signal_type"] = "CLOSE"
+        data["direction"] = "SELL_PUT" if "PUTSELL" in t else "BUY_PUT"
+        m = re.search(r"STRIKE:\s*([\d,\.]+)", t)
+        if m: data["strike"] = float(m.group(1).replace(",", ""))
+        m = re.search(r"MAX DD:\s*([\d\.]+)", t)
+        if m: data["drawdown_max"] = float(m.group(1))
+        data["pnl"] = 1 if "PROFITTO" in t else -1
+        return data
+
+    # VANILLA MENSILE chiusura — formato "Chiusura trade - Esito: CHIUSURA IN PROFITTO"
+    if "CHIUSURA" in t and "STRIKE:" in t and ("SELL PUT" in t or "BUY PUT" in t or "SELL_PUT" in t):
+        data["signal_type"] = "CLOSE"
+        data["direction"] = "SELL_PUT" if ("SELL PUT" in t or "SELL_PUT" in t) else "BUY_PUT"
+        m = re.search(r"STRIKE:\s*([\d,\.]+)", t)
+        if m: data["strike"] = float(m.group(1).replace(",", ""))
+        m = re.search(r"MAX DD:\s*([\d\.]+)", t)
+        if m: data["drawdown_max"] = float(m.group(1))
+        data["pnl"] = 1 if "PROFITTO" in t else -1
+        print(f"VANILLA CLOSE parsed: strike={data['strike']} pnl={data['pnl']}")
+        return data
+
+    # VANILLA MENSILE ingresso — solo se NON e' una chiusura
+    if "STRIKE:" in t and ("SELL PUT" in t or "BUY PUT" in t or "SCADENZA" in t or "SELL_PUT" in t) and "CHIUSURA" not in t:
         data["signal_type"] = "OPEN"
         data["direction"] = "SELL_PUT" if ("SELL PUT" in t or "SELL_PUT" in t) else "BUY_PUT"
         m = re.search(r"STRIKE:\s*([\d,\.]+)", t)
@@ -68,17 +91,6 @@ def parse_signal(text: str) -> dict:
             if spot > 0:
                 data["strike_pct"] = round(abs(spot - strike) / spot * 100, 2)
                 data["premium"]    = round(data["strike_pct"] * 100, 2)
-        return data
-
-    # VANILLA MENSILE chiusura
-    if "CHIUSURA PUTSELL" in t or "CHIUSURA PUTBUY" in t:
-        data["signal_type"] = "CLOSE"
-        data["direction"] = "SELL_PUT" if "PUTSELL" in t else "BUY_PUT"
-        m = re.search(r"STRIKE:\s*([\d,\.]+)", t)
-        if m: data["strike"] = float(m.group(1).replace(",", ""))
-        m = re.search(r"MAX DD:\s*([\d\.]+)", t)
-        if m: data["drawdown_max"] = float(m.group(1))
-        data["pnl"] = 1 if "PROFITTO" in t else -1
         return data
 
     # GOLD ingresso
