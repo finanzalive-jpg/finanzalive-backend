@@ -316,6 +316,7 @@ async def telegram_webhook(request: Request):
 
     parsed = parse_signal(text)
 
+    signal_id = None
     try:
         sig = supabase.table("signals").insert({
             "service_id":          service_id,
@@ -333,10 +334,11 @@ async def telegram_webhook(request: Request):
         }).execute()
         signal_id = sig.data[0]["id"]
     except Exception as e:
-        print(f"DB error: {e}")
-        return {"ok": True}
+        print(f"DB signal insert error (non bloccante): {e}")
+        # NON ritornare — continua comunque con auto_update_trades
 
-    await notify_subscribers(service_id, signal_id, text, service_code)
+    if signal_id:
+        await notify_subscribers(service_id, signal_id, text, service_code)
     await auto_update_trades(service_id, service_code, parsed, text)
     return {"ok": True}
 
