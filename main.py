@@ -606,7 +606,7 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
 
     if action == "OPEN":
         price     = data.get("price", 0)
-        open_time = data.get("open_time")
+        # open_time dall'EA è ora broker (UTC+2/+3) — usiamo utcnow() per coerenza col resto del DB
         try:
             price_val = round(float(price), 2) if price else None
         except:
@@ -632,7 +632,7 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
                     "direction":  direction,
                     "strike":     price_val,
                     "status":     "OPEN",
-                    "opened_at":  open_time or datetime.utcnow().isoformat(),
+                    "opened_at":  datetime.utcnow().isoformat(),
                     "notes":      f"{ticket_note} {symbol}",
                 }).execute()
                 print(f"MT4 OPEN OK: {symbol} {direction} @ {price_val} ticket={ticket}")
@@ -656,7 +656,7 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
     elif action == "CLOSE":
         close_price = data.get("close_price", 0)
         pnl         = data.get("pnl", 0)
-        close_time  = data.get("close_time")
+        # close_time dall'EA è ora broker — usiamo utcnow() per coerenza
         try:
             pnl_val   = round(float(pnl), 2) if pnl is not None else 0
             close_val = round(float(close_price), 2) if close_price else None
@@ -680,7 +680,7 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
             try:
                 supabase.table("trades").update({
                     "status":    "CLOSED",
-                    "closed_at": close_time or datetime.utcnow().isoformat(),
+                    "closed_at": datetime.utcnow().isoformat(),
                     "pnl":       pnl_val,
                 }).eq("id", trade_id).execute()
                 print(f"MT4 CLOSE OK: ticket={ticket} PnL={pnl_val}")
