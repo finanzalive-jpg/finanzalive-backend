@@ -192,9 +192,11 @@ def parse_signal(text: str) -> dict:
 # ─────────────────────────────────────────────
 # AUTO AGGIORNAMENTO TRADES
 # ─────────────────────────────────────────────
-async def auto_update_trades(service_id: int, service_code: str, parsed: dict, text: str):
-    if service_code not in ["vanilla_monthly", "forex", "indices", "gold", "fund_paam"]:
+async def auto_update_trades(service_id, service_code, parsed, text):
+    # MT4 gestisce indices e forex — Telegram solo gli altri
+    if service_code in ["indices", "forex"]:
         return
+    
     try:
         symbol = parsed.get("symbol", "") or ""
         print(f"AUTO_TRADE: service={service_code} type={parsed['signal_type']} symbol={symbol} price={parsed.get('price')} direction={parsed.get('direction')}")
