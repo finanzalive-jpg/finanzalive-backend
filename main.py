@@ -704,7 +704,56 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
 
     return {"ok": True, "action": action, "ticket": ticket}
 
-@app.get("/health")
+@app.get("/api/fund_movements")
+async def get_fund_movements(service_code: str = None, user=Depends(get_user)):
+    """Movimenti di capitale — solo deposit/withdrawal per i clienti (no fee)"""
+    subs = supabase.table("subscriptions") \
+        .select("service_id, services(code)").eq("client_id", str(user.id)).eq("active", True).execute()
+    allowed_codes = [s["services"]["code"] for s in subs.data]
+    if service_code and service_code not in allowed_codes:
+        raise HTTPException(status_code=403, detail="Non abbonato")
+    if service_code:
+        svc = supabase.table("services").select("id").eq("code", service_code).execute()
+        if not svc.data:
+            raise HTTPException(status_code=404, detail="Servizio non trovato")
+        service_id = svc.data[0]["id"]
+        result = supabase.table("fund_movements") \
+            .select("*").eq("service_id", service_id) \
+            .in_("type", ["deposit","withdrawal"]) \
+            .order("moved_at", desc=False).execute()
+    else:
+        allowed_ids = [s["service_id"] for s in subs.data]
+        result = supabase.table("fund_movements") \
+            .select("*").in_("service_id", allowed_ids) \
+            .in_("type", ["deposit","withdrawal"]) \
+            .order("moved_at", desc=False).execute()
+    return result.data
+
+@app.get("/admin/fund_movements", dependencies=[Depends(require_admin)])
+async def admin_fund_movements(service_id: int = None):
+    """Tutti i movimenti incluse fee — solo admin"""
+    q = supabase.table("fund_movements").select("*")
+    if service_id:
+        q = q.eq("service_id", service_id)
+    return q.order("moved_at", desc=False).execute().data
+
+@app.post("/admin/fund_movements", dependencies=[Depends(require_admin)])
+async def create_fund_movement(data: dict):
+    supabase.table("fund_movements").insert({
+        "service_id": data["service_id"],
+        "amount":     round(float(data["amount"]), 2),
+        "moved_at":   data.get("moved_at", datetime.utcnow().isoformat()),
+        "type":       data["type"],
+        "notes":      data.get("notes", ""),
+    }).execute()
+    return {"ok": True}
+
+@app.delete("/admin/fund_movements/{movement_id}", dependencies=[Depends(require_admin)])
+async def delete_fund_movement(movement_id: int):
+    supabase.table("fund_movements").delete().eq("id", movement_id).execute()
+    return {"ok": True}
+
+
 @app.head("/health")
 async def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
