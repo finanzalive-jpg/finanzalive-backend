@@ -192,11 +192,9 @@ def parse_signal(text: str) -> dict:
 # ─────────────────────────────────────────────
 # AUTO AGGIORNAMENTO TRADES
 # ─────────────────────────────────────────────
-async def auto_update_trades(service_id, service_code, parsed, text):
-    # MT4 gestisce indices e forex — Telegram solo gli altri
-    if service_code in ["indices", "forex"]:
+async def auto_update_trades(service_id: int, service_code: str, parsed: dict, text: str):
+    if service_code not in ["vanilla_monthly", "forex", "indices", "gold", "fund_pamm"]:
         return
-    
     try:
         symbol = parsed.get("symbol", "") or ""
         print(f"AUTO_TRADE: service={service_code} type={parsed['signal_type']} symbol={symbol} price={parsed.get('price')} direction={parsed.get('direction')}")
@@ -351,7 +349,7 @@ async def notify_subscribers(service_id: int, signal_id: int, text: str, service
         "vanilla_monthly": "📅 Vanilla Mensile",
         "vanilla_weekly":  "📆 Vanilla Settimanale",
         "forex":           "💱 Sala Forex",
-        "fund_paam":       "💼 Fondo PAAM",
+        "fund_pamm":       "💼 Fondo PAAM",
     }
     msg = f"🔔 *{svc_names.get(service_code, service_code)}*\n\n{text}"
 
@@ -586,7 +584,7 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
         raise HTTPException(status_code=400, detail="JSON non valido")
 
     action       = data.get("action")
-    service_code = data.get("service_code", "fund_paam")
+    service_code = data.get("service_code", "fund_pamm")
     ticket       = data.get("ticket")
     symbol       = data.get("symbol", "")
     direction    = data.get("direction")
