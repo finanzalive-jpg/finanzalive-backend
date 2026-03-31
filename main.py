@@ -593,10 +593,16 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
     print(f"MT4 incoming: action={action} service={service_code} ticket={ticket} sym={symbol} dir={direction}")
 
     try:
-        svc = supabase.table("services").select("id").eq("code", service_code).single().execute()
-        service_id = svc.data["id"]
-    except:
-        raise HTTPException(status_code=404, detail=f"Servizio {service_code} non trovato")
+        svc_res = supabase.table("services").select("id").eq("code", service_code).execute()
+        if not svc_res.data:
+            raise HTTPException(status_code=404, detail=f"Servizio {service_code} non trovato nel DB")
+        service_id = svc_res.data[0]["id"]
+        print(f"MT4 service_id={service_id} per code={service_code}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"MT4 service lookup error: {e}")
+        raise HTTPException(status_code=500, detail=f"Service lookup error: {str(e)}")
 
     if action == "OPEN":
         price     = data.get("price", 0)
