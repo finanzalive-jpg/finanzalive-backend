@@ -150,7 +150,6 @@ def parse_signal(text: str) -> dict:
             return data
 
     # ── FIX #1: FOREX chiusura — formato "Alert for AUDCHF\nCLOSE SELL AUDCHF.ecn"
-    # Va controllato PRIMA del blocco FOREX ingresso
     m_sym_close = re.search(r"ALERT FOR ([A-Z]{6,7})", t)
     if m_sym_close and "CLOSE" in t:
         m_dir_close = re.search(r"CLOSE\s+(BUY|SELL)", t)
@@ -201,8 +200,6 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
         print(f"AUTO_TRADE: service={service_code} type={parsed['signal_type']} symbol={symbol} price={parsed.get('price')} direction={parsed.get('direction')}")
 
         if parsed["signal_type"] == "OPEN":
-            # ── FIX #2: le notes includono SEMPRE il simbolo in formato fisso
-            # es. "Auto - DE40 16/03/2026 08:30" oppure "Auto - GOLD 16/03/2026 08:30"
             note_label = symbol if symbol else service_code.upper()
             insert_data = {
                 "service_id": service_id,
@@ -219,7 +216,6 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
             print(f"AUTO_TRADE OPEN inserted: {note_label} @ {parsed.get('price') or parsed.get('strike')}")
 
         elif parsed["signal_type"] == "CLOSE":
-            # Cerca la trade OPEN con il simbolo corretto nelle notes
             q = supabase.table("trades").select("id, strike, direction") \
                 .eq("service_id", service_id) \
                 .eq("status", "OPEN") \
@@ -232,7 +228,6 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
 
             if q.data:
                 if symbol:
-                    # Match per simbolo nelle notes
                     for trade in q.data:
                         notes = trade.get("notes", "") or ""
                         if symbol.upper() in notes.upper():
@@ -241,7 +236,6 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
                             trade_direction = trade.get("direction")
                             break
                     if not trade_id:
-                        # Per gold: se nessun match per simbolo, prende il più recente
                         if service_code == "gold":
                             trade_id = q.data[0]["id"]
                             trade_entry = q.data[0].get("strike")
@@ -250,7 +244,6 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
                             print(f"AUTO_TRADE CLOSE: no OPEN trade found for symbol={symbol} in service={service_code}")
                             return
                 else:
-                    # Nessun simbolo (vanilla): prende il più recente
                     trade_id = q.data[0]["id"]
                     trade_entry = q.data[0].get("strike")
                     trade_direction = q.data[0].get("direction")
@@ -262,14 +255,13 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
                 }
                 if parsed.get("drawdown_max"): update_data["drawdown_max"] = parsed["drawdown_max"]
 
-                # Calcola PnL da prezzo ingresso e uscita
                 exit_price = parsed.get("price")
                 if exit_price and trade_entry:
                     entry = float(trade_entry)
                     direction = trade_direction or parsed.get("direction", "")
                     if direction in ["BUY", "BUY_PUT"]:
                         pnl = round(exit_price - entry, 2)
-                    else:  # SELL / SELL_PUT
+                    else:
                         pnl = round(entry - exit_price, 2)
                     update_data["pnl"] = pnl
                     print(f"AUTO_TRADE PnL: entry={entry} exit={exit_price} dir={direction} pnl={pnl}")
@@ -335,7 +327,6 @@ async def telegram_webhook(request: Request):
         signal_id = sig.data[0]["id"]
     except Exception as e:
         print(f"DB signal insert error (non bloccante): {e}")
-        # NON ritornare — continua comunque con auto_update_trades
 
     if signal_id:
         await notify_subscribers(service_id, signal_id, text, service_code)
@@ -523,7 +514,6 @@ async def admin_signals(limit: int = 100):
 
 @app.get("/api/quotes")
 async def get_quotes():
-    """Recupera quotazioni mercati in tempo reale via Yahoo Finance"""
     symbols = {
         "S&P 500":   "%5EGSPC",
         "Nasdaq":    "%5EIXIC",
@@ -578,6 +568,11 @@ async def delete_news(news_id: int):
     supabase.table("news").update({"active": False}).eq("id", news_id).execute()
     return {"ok": True}
 
+# ─────────────────────────────────────────────
+# MT4 TRADE ENDPOINT
+# FIX: rimosso .like() che causava Cloudflare 1101
+# Il filtro per ticket viene fatto in Python con startswith()
+# ─────────────────────────────────────────────
 @app.post("/mt4/trade")
 async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
     """Riceve operazioni da EA MT4"""
@@ -593,6 +588,9 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
     ticket       = data.get("ticket")
     symbol       = data.get("symbol", "")
     direction    = data.get("direction")
+    ticket_note  = f"MT4-{ticket}"
+
+    print(f"MT4 incoming: action={action} service={service_code} ticket={ticket} sym={symbol} dir={direction}")
 
     try:
         svc = supabase.table("services").select("id").eq("code", service_code).single().execute()
@@ -603,64 +601,100 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
     if action == "OPEN":
         price     = data.get("price", 0)
         open_time = data.get("open_time")
+        try:
+            price_val = round(float(price), 2) if price else None
+        except:
+            price_val = None
 
-        existing = supabase.table("trades").select("id") \
-            .eq("service_id", service_id) \
-            .like("notes", f"MT4-{ticket}%") \
-            .execute()
+        # Fetch tutti i trades aperti del servizio e filtra in Python
+        # (evita .like() che causa Cloudflare 1101)
+        try:
+            all_open = supabase.table("trades").select("id,notes") \
+                .eq("service_id", service_id).eq("status", "OPEN").execute()
+            already = any(
+                (t.get("notes") or "").startswith(ticket_note)
+                for t in (all_open.data or [])
+            )
+        except Exception as e:
+            print(f"MT4 duplicate check warn: {e}")
+            already = False
 
-        if not existing.data:
-            supabase.table("trades").insert({
-                "service_id": service_id,
-                "direction":  direction,
-                "strike":     price,
-                "status":     "OPEN",
-                "opened_at":  open_time or datetime.utcnow().isoformat(),
-                "notes":      f"MT4-{ticket} {symbol}",
-            }).execute()
-            msg = f"Alert for {symbol} {direction} {symbol} Apertura: {price}"
+        if not already:
+            try:
+                supabase.table("trades").insert({
+                    "service_id": service_id,
+                    "direction":  direction,
+                    "strike":     price_val,
+                    "status":     "OPEN",
+                    "opened_at":  open_time or datetime.utcnow().isoformat(),
+                    "notes":      f"{ticket_note} {symbol}",
+                }).execute()
+                print(f"MT4 OPEN OK: {symbol} {direction} @ {price_val} ticket={ticket}")
+            except Exception as e:
+                print(f"MT4 INSERT ERROR: {e}")
+                raise HTTPException(status_code=500, detail=f"DB insert error: {str(e)}")
+
             try:
                 supabase.table("signals").insert({
                     "service_id":   service_id,
-                    "message_text": msg,
+                    "message_text": f"Alert for {symbol} {direction} Apertura: {price_val}",
                     "signal_type":  "OPEN",
                     "direction":    direction,
-                    "strike":       price,
+                    "strike":       price_val,
                 }).execute()
-            except: pass
-            print(f"MT4 OPEN: {symbol} {direction} @ {price} ticket={ticket}")
+            except Exception as e:
+                print(f"MT4 signal warn: {e}")
+        else:
+            print(f"MT4 OPEN: ticket={ticket} già presente in DB, skip")
 
     elif action == "CLOSE":
         close_price = data.get("close_price", 0)
         pnl         = data.get("pnl", 0)
         close_time  = data.get("close_time")
+        try:
+            pnl_val   = round(float(pnl), 2) if pnl is not None else 0
+            close_val = round(float(close_price), 2) if close_price else None
+        except:
+            pnl_val = 0; close_val = None
 
-        existing = supabase.table("trades").select("id") \
-            .eq("service_id", service_id) \
-            .eq("status", "OPEN") \
-            .like("notes", f"MT4-{ticket}%") \
-            .execute()
+        # Fetch tutti i trades aperti e filtra in Python
+        try:
+            all_open = supabase.table("trades").select("id,notes") \
+                .eq("service_id", service_id).eq("status", "OPEN").execute()
+            matching = [
+                t for t in (all_open.data or [])
+                if (t.get("notes") or "").startswith(ticket_note)
+            ]
+        except Exception as e:
+            print(f"MT4 CLOSE search error: {e}")
+            matching = []
 
-        if existing.data:
-            supabase.table("trades").update({
-                "status":    "CLOSED",
-                "closed_at": close_time or datetime.utcnow().isoformat(),
-                "pnl":       round(pnl, 2),
-            }).eq("id", existing.data[0]["id"]).execute()
-            msg = f"Alert for {symbol} Chiusura {direction} {symbol} Uscita: {close_price}"
+        if matching:
+            trade_id = matching[0]["id"]
+            try:
+                supabase.table("trades").update({
+                    "status":    "CLOSED",
+                    "closed_at": close_time or datetime.utcnow().isoformat(),
+                    "pnl":       pnl_val,
+                }).eq("id", trade_id).execute()
+                print(f"MT4 CLOSE OK: ticket={ticket} PnL={pnl_val}")
+            except Exception as e:
+                print(f"MT4 UPDATE ERROR: {e}")
+                raise HTTPException(status_code=500, detail=f"DB update error: {str(e)}")
+
             try:
                 supabase.table("signals").insert({
                     "service_id":   service_id,
-                    "message_text": msg,
+                    "message_text": f"Alert for {symbol} Chiusura {direction} Uscita: {close_val}",
                     "signal_type":  "CLOSE",
                     "direction":    direction,
-                    "strike":       close_price,
-                    "pnl":          round(pnl, 2),
+                    "strike":       close_val,
+                    "pnl":          pnl_val,
                 }).execute()
-            except: pass
-            print(f"MT4 CLOSE: ticket={ticket} PnL={pnl}")
+            except Exception as e:
+                print(f"MT4 signal close warn: {e}")
         else:
-            print(f"MT4 CLOSE: ticket={ticket} not found in DB")
+            print(f"MT4 CLOSE: ticket={ticket} not found in DB (notes prefix: {ticket_note})")
 
     return {"ok": True, "action": action, "ticket": ticket}
 
