@@ -430,8 +430,9 @@ _TOKEN_TTL = 28800
 def _token_sign(payload_b64: str) -> str:
     return _hmac.new(ADMIN_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
 
-def create_admin_token(admin_id: str, username: str, full_name: str) -> str:
+def create_admin_token(admin_id: str, username: str, full_name: str, is_superadmin: bool = False) -> str:
     payload = _json.dumps({"id": admin_id, "u": username, "n": full_name,
+                           "sa": is_superadmin,
                            "exp": int(_time.time()) + _TOKEN_TTL}, separators=(',', ':'))
     p64 = _b64.urlsafe_b64encode(payload.encode()).decode()
     return f"{p64}.{_token_sign(p64)}"
@@ -456,14 +457,22 @@ def require_admin(x_admin_secret: str = Header(None), x_admin_token: str = Heade
     if x_admin_token:
         data = decode_admin_token(x_admin_token)
         if data:
-            return {"id": data["id"], "username": data["u"], "full_name": data.get("n", "")}
+            return {"id": data["id"], "username": data["u"], "full_name": data.get("n", ""),
+                    "is_superadmin": data.get("sa", False)}
     if x_admin_secret and x_admin_secret == ADMIN_SECRET:
-        return {"id": "system", "username": "system", "full_name": "Sistema"}
+        return {"id": "system", "username": "system", "full_name": "Sistema", "is_superadmin": False}
     raise HTTPException(status_code=403, detail="Accesso negato")
 
-def require_superadmin(x_superadmin_secret: str = Header(None)):
-    if not SUPERADMIN_SECRET or x_superadmin_secret != SUPERADMIN_SECRET:
-        raise HTTPException(status_code=403, detail="Accesso superadmin negato")
+def require_superadmin(x_admin_token: str = Header(None), x_superadmin_secret: str = Header(None)):
+    """Verifica che sia un admin con flag is_superadmin, oppure il secret legacy."""
+    if x_admin_token:
+        data = decode_admin_token(x_admin_token)
+        if data and data.get("sa"):
+            return {"id": data["id"], "username": data["u"]}
+    # Fallback: secret diretto (per chiamate API esterne)
+    if SUPERADMIN_SECRET and x_superadmin_secret == SUPERADMIN_SECRET:
+        return {"id": "superadmin", "username": "superadmin"}
+    raise HTTPException(status_code=403, detail="Accesso superadmin negato")
 
 def log_admin_action(action: str, description: str, target_email: str = None,
                      target_client_id: str = None, details: dict = None,
@@ -496,8 +505,10 @@ async def admin_login(data: dict):
     user = res.data[0]
     if not verify_password(password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Credenziali non valide")
-    token = create_admin_token(str(user["id"]), user["username"], user.get("full_name", ""))
-    return {"ok": True, "token": token, "username": user["username"], "full_name": user.get("full_name", "")}
+    is_sa = bool(user.get("is_superadmin", False))
+    token = create_admin_token(str(user["id"]), user["username"], user.get("full_name", ""), is_sa)
+    return {"ok": True, "token": token, "username": user["username"],
+            "full_name": user.get("full_name", ""), "is_superadmin": is_sa}
 
 # ─────────────────────────────────────────────
 # API CLIENTI
@@ -987,10 +998,11 @@ async def create_admin_user(data: dict):
     if existing.data:
         raise HTTPException(status_code=409, detail="Username già esistente")
     supabase.table("admin_users").insert({
-        "username":      username,
-        "full_name":     full_name,
-        "password_hash": hash_password(password),
-        "active":        True,
+        "username":       username,
+        "full_name":      full_name,
+        "password_hash":  hash_password(password),
+        "active":         True,
+        "is_superadmin":  bool(data.get("is_superadmin", False)),
     }).execute()
     return {"ok": True, "username": username}
 
