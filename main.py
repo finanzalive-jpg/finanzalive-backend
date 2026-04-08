@@ -302,8 +302,10 @@ async def telegram_webhook(request: Request):
     if not text:
         return {"ok": True}
 
+    print(f"TELEGRAM INCOMING: chat_id={chat_id} msg_id={msg_id} text_preview={text[:60]}")
     service_code = CHANNEL_SERVICE_MAP.get(chat_id)
     if not service_code:
+        print(f"TELEGRAM UNKNOWN CHAT: chat_id={chat_id} — non presente in CHANNEL_SERVICE_MAP")
         return {"ok": True}
 
     # Solo gold, vanilla_monthly, vanilla_weekly sono gestiti da Telegram
