@@ -627,9 +627,16 @@ async def toggle_sub(client_id: str, service_code: str, active: bool, admin=Depe
             "active": active,
         }).execute()
     stato = "ATTIVATO" if active else "DISATTIVATO"
+    try:
+        cl = supabase.table("clients").select("email,full_name").eq("id", client_id).single().execute()
+        client_email = cl.data.get("email") if cl.data else None
+        client_name  = cl.data.get("full_name","") if cl.data else ""
+    except:
+        client_email = None; client_name = ""
     log_admin_action(
         action="TOGGLE_SUBSCRIPTION",
-        description=f"Servizio '{service_code}' {stato} per cliente {client_id}",
+        description=f"Servizio '{service_code}' {stato} per {client_name or client_email or client_id}",
+        target_email=client_email,
         target_client_id=client_id,
         details={"service_code": service_code, "active": active},
         admin_username=admin["username"]
@@ -645,9 +652,16 @@ async def renew_sub(client_id: str, service_code: str, data: dict, admin=Depends
     if data.get("notes") is not None: update_data["notes"] = data["notes"]
     supabase.table("subscriptions").update(update_data) \
         .eq("client_id", client_id).eq("service_id", svc.data["id"]).execute()
+    try:
+        cl = supabase.table("clients").select("email,full_name").eq("id", client_id).single().execute()
+        client_email = cl.data.get("email") if cl.data else None
+        client_name  = cl.data.get("full_name","") if cl.data else ""
+    except:
+        client_email = None; client_name = ""
     log_admin_action(
         action="RENEW_SUBSCRIPTION",
-        description=f"Abbonamento '{service_code}' rinnovato per cliente {client_id}",
+        description=f"Abbonamento '{service_code}' rinnovato per {client_name or client_email or client_id}",
+        target_email=client_email,
         target_client_id=client_id,
         details={"service_code": service_code, **update_data},
         admin_username=admin["username"]
