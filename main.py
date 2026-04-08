@@ -2,6 +2,10 @@
 IUPPITER — Backend FastAPI v3
 Webhook Telegram + API dashboard clienti
 Parser automatico: Vanilla Mensile, Forex, Indici World
+
+Sorgenti segnali:
+  - Telegram  → Gold, Vanilla Mensile, Vanilla Settimanale
+  - MT4 (EA)  → Indici World, Forex, Fondo PAMM (e altri)
 """
 
 from fastapi import FastAPI, Request, HTTPException, Depends, Header
@@ -302,8 +306,9 @@ async def telegram_webhook(request: Request):
     if not service_code:
         return {"ok": True}
 
-    # indices, forex, fund_pamm sono gestiti da MT4 — ignora completamente Telegram
-    if service_code in ["indices", "forex", "fund_pamm"]:
+    # Solo gold, vanilla_monthly, vanilla_weekly sono gestiti da Telegram
+    # Tutti gli altri servizi (indices, forex, fund_pamm, ecc.) sono gestiti esclusivamente da MT4
+    if service_code not in ["gold", "vanilla_monthly", "vanilla_weekly"]:
         return {"ok": True}
 
     try:
