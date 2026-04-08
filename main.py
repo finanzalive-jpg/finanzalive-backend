@@ -730,13 +730,13 @@ async def get_fund_movements(service_code: str = None, user=Depends(get_user)):
         service_id = svc.data[0]["id"]
         result = supabase.table("fund_movements") \
             .select("*").eq("service_id", service_id) \
-            .in_("type", ["deposit","withdrawal"]) \
+            .in_("type", ["deposit","withdrawal","adjustment","balance_snapshot"]) \
             .order("moved_at", desc=False).execute()
     else:
         allowed_ids = [s["service_id"] for s in subs.data]
         result = supabase.table("fund_movements") \
             .select("*").in_("service_id", allowed_ids) \
-            .in_("type", ["deposit","withdrawal"]) \
+            .in_("type", ["deposit","withdrawal","adjustment","balance_snapshot"]) \
             .order("moved_at", desc=False).execute()
     return result.data
 
