@@ -13,6 +13,11 @@ from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import os
 import re
+import hashlib
+import hmac as _hmac
+import base64 as _b64
+import time as _time
+import json as _json
 from datetime import datetime
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -400,17 +405,70 @@ def get_user(authorization: str = Header(None)):
     except:
         raise HTTPException(status_code=401, detail="Token non valido")
 
-def require_admin(x_admin_secret: str = Header(None)):
-    if x_admin_secret != ADMIN_SECRET:
-        raise HTTPException(status_code=403, detail="Accesso negato")
+# ─────────────────────────────────────────────
+# PASSWORD HASHING  (PBKDF2-HMAC-SHA256, stdlib)
+# ─────────────────────────────────────────────
+def hash_password(password: str) -> str:
+    salt = os.urandom(16)
+    key  = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
+    return _b64.b64encode(salt + key).decode('ascii')
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        data = _b64.b64decode(stored.encode('ascii'))
+        salt, key = data[:16], data[16:]
+        new_key = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
+        return _hmac.compare_digest(key, new_key)
+    except Exception:
+        return False
+
+# ─────────────────────────────────────────────
+# ADMIN TOKEN  (HMAC-SHA256 stateless, 8h TTL)
+# ─────────────────────────────────────────────
+_TOKEN_TTL = 28800
+
+def _token_sign(payload_b64: str) -> str:
+    return _hmac.new(ADMIN_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+
+def create_admin_token(admin_id: str, username: str, full_name: str) -> str:
+    payload = _json.dumps({"id": admin_id, "u": username, "n": full_name,
+                           "exp": int(_time.time()) + _TOKEN_TTL}, separators=(',', ':'))
+    p64 = _b64.urlsafe_b64encode(payload.encode()).decode()
+    return f"{p64}.{_token_sign(p64)}"
+
+def decode_admin_token(token: str):
+    try:
+        p64, sig = token.rsplit(".", 1)
+        if not _hmac.compare_digest(sig, _token_sign(p64)):
+            return None
+        data = _json.loads(_b64.urlsafe_b64decode(p64 + "==").decode())
+        if data.get("exp", 0) < int(_time.time()):
+            return None
+        return data
+    except Exception:
+        return None
+
+# ─────────────────────────────────────────────
+# AUTH DEPENDENCIES
+# ─────────────────────────────────────────────
+def require_admin(x_admin_secret: str = Header(None), x_admin_token: str = Header(None)):
+    """Accetta token utente admin OPPURE il secret legacy (usato dall'EA MT4)."""
+    if x_admin_token:
+        data = decode_admin_token(x_admin_token)
+        if data:
+            return {"id": data["id"], "username": data["u"], "full_name": data.get("n", "")}
+    if x_admin_secret and x_admin_secret == ADMIN_SECRET:
+        return {"id": "system", "username": "system", "full_name": "Sistema"}
+    raise HTTPException(status_code=403, detail="Accesso negato")
 
 def require_superadmin(x_superadmin_secret: str = Header(None)):
     if not SUPERADMIN_SECRET or x_superadmin_secret != SUPERADMIN_SECRET:
         raise HTTPException(status_code=403, detail="Accesso superadmin negato")
 
 def log_admin_action(action: str, description: str, target_email: str = None,
-                     target_client_id: str = None, details: dict = None):
-    """Scrive un record di audit nella tabella admin_logs (fire-and-forget, non blocca)"""
+                     target_client_id: str = None, details: dict = None,
+                     admin_username: str = None):
+    """Scrive un record di audit nella tabella admin_logs (fire-and-forget)"""
     try:
         supabase.table("admin_logs").insert({
             "action":           action,
@@ -418,9 +476,28 @@ def log_admin_action(action: str, description: str, target_email: str = None,
             "target_email":     target_email,
             "target_client_id": target_client_id,
             "details":          details or {},
+            "admin_username":   admin_username or "unknown",
         }).execute()
     except Exception as e:
         print(f"[AUDIT LOG ERROR] {e}")
+
+# ─────────────────────────────────────────────
+# ADMIN LOGIN
+# ─────────────────────────────────────────────
+@app.post("/admin/login")
+async def admin_login(data: dict):
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="Username e password obbligatori")
+    res = supabase.table("admin_users").select("*").eq("username", username).eq("active", True).execute()
+    if not res.data:
+        raise HTTPException(status_code=401, detail="Credenziali non valide")
+    user = res.data[0]
+    if not verify_password(password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Credenziali non valide")
+    token = create_admin_token(str(user["id"]), user["username"], user.get("full_name", ""))
+    return {"ok": True, "token": token, "username": user["username"], "full_name": user.get("full_name", "")}
 
 # ─────────────────────────────────────────────
 # API CLIENTI
@@ -483,8 +560,8 @@ async def get_profile(user=Depends(get_user)):
 # ─────────────────────────────────────────────
 # ADMIN API
 # ─────────────────────────────────────────────
-@app.post("/admin/client", dependencies=[Depends(require_admin)])
-async def create_client(data: dict):
+@app.post("/admin/client")
+async def create_client(data: dict, admin=Depends(require_admin)):
     auth_user = supabase.auth.admin.create_user({
         "email": data["email"], "password": data["password"], "email_confirm": True,
     })
@@ -513,7 +590,8 @@ async def create_client(data: dict):
             "expires_at": data.get("expires_at"),
             "amount": data.get("amount"),
             "telegram_username": data.get("telegram_username"),
-        }
+        },
+        admin_username=admin["username"]
     )
     return {"ok": True, "client_id": str(uid)}
 
@@ -522,8 +600,8 @@ async def list_clients():
     return supabase.table("clients") \
         .select("*, subscriptions(active, expires_at, amount, notes, services(name,code))").execute().data
 
-@app.patch("/admin/subscription/{client_id}/{service_code}", dependencies=[Depends(require_admin)])
-async def toggle_sub(client_id: str, service_code: str, active: bool):
+@app.patch("/admin/subscription/{client_id}/{service_code}")
+async def toggle_sub(client_id: str, service_code: str, active: bool, admin=Depends(require_admin)):
     svc = supabase.table("services").select("id").eq("code", service_code).single().execute()
     service_id = svc.data["id"]
     existing = supabase.table("subscriptions").select("id") \
@@ -542,12 +620,13 @@ async def toggle_sub(client_id: str, service_code: str, active: bool):
         action="TOGGLE_SUBSCRIPTION",
         description=f"Servizio '{service_code}' {stato} per cliente {client_id}",
         target_client_id=client_id,
-        details={"service_code": service_code, "active": active}
+        details={"service_code": service_code, "active": active},
+        admin_username=admin["username"]
     )
     return {"ok": True}
 
-@app.patch("/admin/subscription/{client_id}/{service_code}/renew", dependencies=[Depends(require_admin)])
-async def renew_sub(client_id: str, service_code: str, data: dict):
+@app.patch("/admin/subscription/{client_id}/{service_code}/renew")
+async def renew_sub(client_id: str, service_code: str, data: dict, admin=Depends(require_admin)):
     svc = supabase.table("services").select("id").eq("code", service_code).single().execute()
     update_data = {"active": True}
     if data.get("expires_at"): update_data["expires_at"] = data["expires_at"]
@@ -559,7 +638,8 @@ async def renew_sub(client_id: str, service_code: str, data: dict):
         action="RENEW_SUBSCRIPTION",
         description=f"Abbonamento '{service_code}' rinnovato per cliente {client_id}",
         target_client_id=client_id,
-        details={"service_code": service_code, **update_data}
+        details={"service_code": service_code, **update_data},
+        admin_username=admin["username"]
     )
     return {"ok": True}
 
@@ -611,26 +691,27 @@ async def get_quotes():
 async def get_news():
     return supabase.table("news").select("*").eq("active", True).order("created_at", desc=True).limit(10).execute().data
 
-@app.post("/admin/news", dependencies=[Depends(require_admin)])
-async def create_news(data: dict):
-    supabase.table("news").insert({
-        "message": data["message"],
-        "active": True
-    }).execute()
+@app.post("/admin/news")
+async def create_news(data: dict, admin=Depends(require_admin)):
+    msg = data["message"]
+    supabase.table("news").insert({"message": msg, "active": True}).execute()
+    preview = msg[:80] + ("..." if len(msg) > 80 else "")
     log_admin_action(
         action="CREATE_NEWS",
-        description=f"Nuova news pubblicata: \"{data['message'][:80]}{'...' if len(data['message'])>80 else ''}\"",
-        details={"message": data["message"]}
+        description=f"Nuova news pubblicata: {preview}",
+        details={"message": msg},
+        admin_username=admin["username"]
     )
     return {"ok": True}
 
-@app.delete("/admin/news/{news_id}", dependencies=[Depends(require_admin)])
-async def delete_news(news_id: int):
+@app.delete("/admin/news/{news_id}")
+async def delete_news(news_id: int, admin=Depends(require_admin)):
     supabase.table("news").update({"active": False}).eq("id", news_id).execute()
     log_admin_action(
         action="DELETE_NEWS",
         description=f"News id={news_id} disattivata",
-        details={"news_id": news_id}
+        details={"news_id": news_id},
+        admin_username=admin["username"]
     )
     return {"ok": True}
 
@@ -817,8 +898,8 @@ async def admin_fund_movements(service_id: int = None):
         q = q.eq("service_id", service_id)
     return q.order("moved_at", desc=False).execute().data
 
-@app.post("/admin/fund_movements", dependencies=[Depends(require_admin)])
-async def create_fund_movement(data: dict):
+@app.post("/admin/fund_movements")
+async def create_fund_movement(data: dict, admin=Depends(require_admin)):
     amount_val = round(float(data["amount"]), 2)
     mov_type   = data["type"]
     supabase.table("fund_movements").insert({
@@ -830,24 +911,26 @@ async def create_fund_movement(data: dict):
     }).execute()
     log_admin_action(
         action="CREATE_FUND_MOVEMENT",
-        description=f"Movimento fondo inserito: tipo={mov_type}, importo={amount_val}€, service_id={data['service_id']}",
+        description=f"Movimento fondo inserito: tipo={mov_type}, importo={amount_val}EUR, service_id={data['service_id']}",
         details={
             "service_id": data["service_id"],
             "amount": amount_val,
             "type": mov_type,
             "notes": data.get("notes", ""),
             "moved_at": data.get("moved_at"),
-        }
+        },
+        admin_username=admin["username"]
     )
     return {"ok": True}
 
-@app.delete("/admin/fund_movements/{movement_id}", dependencies=[Depends(require_admin)])
-async def delete_fund_movement(movement_id: int):
+@app.delete("/admin/fund_movements/{movement_id}")
+async def delete_fund_movement(movement_id: int, admin=Depends(require_admin)):
     supabase.table("fund_movements").delete().eq("id", movement_id).execute()
     log_admin_action(
         action="DELETE_FUND_MOVEMENT",
         description=f"Movimento fondo eliminato: id={movement_id}",
-        details={"movement_id": movement_id}
+        details={"movement_id": movement_id},
+        admin_username=admin["username"]
     )
     return {"ok": True}
 
@@ -887,6 +970,42 @@ async def mt4_balance(request: Request, x_admin_secret: str = Header(None)):
 
     return {"ok": True, "balance": balance_val}
 
+
+@app.get("/superadmin/admin_users", dependencies=[Depends(require_superadmin)])
+async def list_admin_users():
+    return supabase.table("admin_users").select("id,username,full_name,active,created_at") \
+        .order("created_at", desc=False).execute().data
+
+@app.post("/superadmin/admin_users", dependencies=[Depends(require_superadmin)])
+async def create_admin_user(data: dict):
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    full_name = data.get("full_name", "").strip()
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="Username e password obbligatori")
+    existing = supabase.table("admin_users").select("id").eq("username", username).execute()
+    if existing.data:
+        raise HTTPException(status_code=409, detail="Username già esistente")
+    supabase.table("admin_users").insert({
+        "username":      username,
+        "full_name":     full_name,
+        "password_hash": hash_password(password),
+        "active":        True,
+    }).execute()
+    return {"ok": True, "username": username}
+
+@app.patch("/superadmin/admin_users/{admin_id}", dependencies=[Depends(require_superadmin)])
+async def toggle_admin_user(admin_id: str, data: dict):
+    supabase.table("admin_users").update({"active": data["active"]}).eq("id", admin_id).execute()
+    return {"ok": True}
+
+@app.patch("/superadmin/admin_users/{admin_id}/password", dependencies=[Depends(require_superadmin)])
+async def reset_admin_password(admin_id: str, data: dict):
+    password = data.get("password") or ""
+    if not password:
+        raise HTTPException(status_code=400, detail="Password obbligatoria")
+    supabase.table("admin_users").update({"password_hash": hash_password(password)}).eq("id", admin_id).execute()
+    return {"ok": True}
 
 @app.get("/superadmin/logs", dependencies=[Depends(require_superadmin)])
 async def superadmin_logs(limit: int = 200, offset: int = 0):
