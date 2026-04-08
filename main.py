@@ -34,6 +34,7 @@ SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 TELEGRAM_BOT_TOKEN   = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_API         = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 ADMIN_SECRET         = os.environ["ADMIN_SECRET"]
+SUPERADMIN_SECRET    = os.environ.get("SUPERADMIN_SECRET", "")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
@@ -403,6 +404,24 @@ def require_admin(x_admin_secret: str = Header(None)):
     if x_admin_secret != ADMIN_SECRET:
         raise HTTPException(status_code=403, detail="Accesso negato")
 
+def require_superadmin(x_superadmin_secret: str = Header(None)):
+    if not SUPERADMIN_SECRET or x_superadmin_secret != SUPERADMIN_SECRET:
+        raise HTTPException(status_code=403, detail="Accesso superadmin negato")
+
+def log_admin_action(action: str, description: str, target_email: str = None,
+                     target_client_id: str = None, details: dict = None):
+    """Scrive un record di audit nella tabella admin_logs (fire-and-forget, non blocca)"""
+    try:
+        supabase.table("admin_logs").insert({
+            "action":           action,
+            "description":      description,
+            "target_email":     target_email,
+            "target_client_id": target_client_id,
+            "details":          details or {},
+        }).execute()
+    except Exception as e:
+        print(f"[AUDIT LOG ERROR] {e}")
+
 # ─────────────────────────────────────────────
 # API CLIENTI
 # ─────────────────────────────────────────────
@@ -483,6 +502,19 @@ async def create_client(data: dict):
             "amount": data.get("amount"),
             "notes": data.get("notes"),
         }).execute()
+    log_admin_action(
+        action="CREATE_CLIENT",
+        description=f"Nuovo cliente creato: {data['email']} ({data.get('full_name','')})",
+        target_email=data["email"],
+        target_client_id=str(uid),
+        details={
+            "full_name": data.get("full_name", ""),
+            "services": data.get("services", []),
+            "expires_at": data.get("expires_at"),
+            "amount": data.get("amount"),
+            "telegram_username": data.get("telegram_username"),
+        }
+    )
     return {"ok": True, "client_id": str(uid)}
 
 @app.get("/admin/clients", dependencies=[Depends(require_admin)])
@@ -505,6 +537,13 @@ async def toggle_sub(client_id: str, service_code: str, active: bool):
             "service_id": service_id,
             "active": active,
         }).execute()
+    stato = "ATTIVATO" if active else "DISATTIVATO"
+    log_admin_action(
+        action="TOGGLE_SUBSCRIPTION",
+        description=f"Servizio '{service_code}' {stato} per cliente {client_id}",
+        target_client_id=client_id,
+        details={"service_code": service_code, "active": active}
+    )
     return {"ok": True}
 
 @app.patch("/admin/subscription/{client_id}/{service_code}/renew", dependencies=[Depends(require_admin)])
@@ -516,6 +555,12 @@ async def renew_sub(client_id: str, service_code: str, data: dict):
     if data.get("notes") is not None: update_data["notes"] = data["notes"]
     supabase.table("subscriptions").update(update_data) \
         .eq("client_id", client_id).eq("service_id", svc.data["id"]).execute()
+    log_admin_action(
+        action="RENEW_SUBSCRIPTION",
+        description=f"Abbonamento '{service_code}' rinnovato per cliente {client_id}",
+        target_client_id=client_id,
+        details={"service_code": service_code, **update_data}
+    )
     return {"ok": True}
 
 @app.get("/admin/signals", dependencies=[Depends(require_admin)])
@@ -572,11 +617,21 @@ async def create_news(data: dict):
         "message": data["message"],
         "active": True
     }).execute()
+    log_admin_action(
+        action="CREATE_NEWS",
+        description=f"Nuova news pubblicata: \"{data['message'][:80]}{'...' if len(data['message'])>80 else ''}\"",
+        details={"message": data["message"]}
+    )
     return {"ok": True}
 
 @app.delete("/admin/news/{news_id}", dependencies=[Depends(require_admin)])
 async def delete_news(news_id: int):
     supabase.table("news").update({"active": False}).eq("id", news_id).execute()
+    log_admin_action(
+        action="DELETE_NEWS",
+        description=f"News id={news_id} disattivata",
+        details={"news_id": news_id}
+    )
     return {"ok": True}
 
 # ─────────────────────────────────────────────
@@ -764,18 +819,36 @@ async def admin_fund_movements(service_id: int = None):
 
 @app.post("/admin/fund_movements", dependencies=[Depends(require_admin)])
 async def create_fund_movement(data: dict):
+    amount_val = round(float(data["amount"]), 2)
+    mov_type   = data["type"]
     supabase.table("fund_movements").insert({
         "service_id": data["service_id"],
-        "amount":     round(float(data["amount"]), 2),
+        "amount":     amount_val,
         "moved_at":   data.get("moved_at", datetime.utcnow().isoformat()),
-        "type":       data["type"],
+        "type":       mov_type,
         "notes":      data.get("notes", ""),
     }).execute()
+    log_admin_action(
+        action="CREATE_FUND_MOVEMENT",
+        description=f"Movimento fondo inserito: tipo={mov_type}, importo={amount_val}€, service_id={data['service_id']}",
+        details={
+            "service_id": data["service_id"],
+            "amount": amount_val,
+            "type": mov_type,
+            "notes": data.get("notes", ""),
+            "moved_at": data.get("moved_at"),
+        }
+    )
     return {"ok": True}
 
 @app.delete("/admin/fund_movements/{movement_id}", dependencies=[Depends(require_admin)])
 async def delete_fund_movement(movement_id: int):
     supabase.table("fund_movements").delete().eq("id", movement_id).execute()
+    log_admin_action(
+        action="DELETE_FUND_MOVEMENT",
+        description=f"Movimento fondo eliminato: id={movement_id}",
+        details={"movement_id": movement_id}
+    )
     return {"ok": True}
 
 
@@ -814,6 +887,16 @@ async def mt4_balance(request: Request, x_admin_secret: str = Header(None)):
 
     return {"ok": True, "balance": balance_val}
 
+
+@app.get("/superadmin/logs", dependencies=[Depends(require_superadmin)])
+async def superadmin_logs(limit: int = 200, offset: int = 0):
+    """Giornale audit — solo superadmin"""
+    result = supabase.table("admin_logs") \
+        .select("*") \
+        .order("created_at", desc=True) \
+        .range(offset, offset + limit - 1) \
+        .execute()
+    return result.data
 
 @app.head("/health")
 async def health():
