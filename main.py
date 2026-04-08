@@ -619,7 +619,7 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
         price     = data.get("price", 0)
         # open_time dall'EA è ora broker (UTC+2/+3) — usiamo utcnow() per coerenza col resto del DB
         try:
-            price_val = round(float(price), 2) if price else None
+            price_val = round(float(price), 5) if price else None
         except:
             price_val = None
 
@@ -670,7 +670,7 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
         # close_time dall'EA è ora broker — usiamo utcnow() per coerenza
         try:
             pnl_val   = round(float(pnl), 2) if pnl is not None else 0
-            close_val = round(float(close_price), 2) if close_price else None
+            close_val = round(float(close_price), 5) if close_price else None
         except:
             pnl_val = 0; close_val = None
 
