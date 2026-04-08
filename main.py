@@ -193,7 +193,9 @@ def parse_signal(text: str) -> dict:
 # AUTO AGGIORNAMENTO TRADES
 # ─────────────────────────────────────────────
 async def auto_update_trades(service_id: int, service_code: str, parsed: dict, text: str):
-    if service_code not in ["vanilla_monthly", "forex", "indices", "gold", "fund_pamm"]:
+    # MT4 gestisce: indices, forex, fund_pamm
+    # Telegram gestisce: gold, vanilla_monthly, vanilla_weekly
+    if service_code not in ["gold", "vanilla_monthly", "vanilla_weekly"]:
         return
     try:
         symbol = parsed.get("symbol", "") or ""
@@ -298,6 +300,10 @@ async def telegram_webhook(request: Request):
 
     service_code = CHANNEL_SERVICE_MAP.get(chat_id)
     if not service_code:
+        return {"ok": True}
+
+    # indices, forex, fund_pamm sono gestiti da MT4 — ignora completamente Telegram
+    if service_code in ["indices", "forex", "fund_pamm"]:
         return {"ok": True}
 
     try:
