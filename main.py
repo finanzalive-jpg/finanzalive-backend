@@ -674,6 +674,20 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
         except:
             pnl_val = 0; close_val = None
 
+        # Idempotency: se il trade esiste già come CLOSED, rispondi OK e non fare nulla
+        try:
+            all_trades = supabase.table("trades").select("id,notes,status") \
+                .eq("service_id", service_id).execute()
+            already_closed = any(
+                (t.get("notes") or "").startswith(ticket_note) and t.get("status") == "CLOSED"
+                for t in (all_trades.data or [])
+            )
+            if already_closed:
+                print(f"MT4 CLOSE: ticket={ticket} già CLOSED in DB, skip (idempotent)")
+                return {"ok": True, "action": action, "ticket": ticket}
+        except Exception as e:
+            print(f"MT4 idempotency check warn: {e}")
+
         # Fetch tutti i trades aperti e filtra in Python
         try:
             all_open = supabase.table("trades").select("id,notes") \
