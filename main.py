@@ -765,6 +765,42 @@ async def delete_fund_movement(movement_id: int):
     return {"ok": True}
 
 
+@app.post("/mt4/balance")
+async def mt4_balance(request: Request, x_admin_secret: str = Header(None)):
+    """Riceve il saldo reale del conto MT4 dall'EA e lo salva come balance_snapshot"""
+    if x_admin_secret != ADMIN_SECRET:
+        raise HTTPException(status_code=403, detail="Accesso negato")
+    try:
+        data = await request.json()
+    except:
+        raise HTTPException(status_code=400, detail="JSON non valido")
+
+    balance      = data.get("balance")
+    service_code = data.get("service_code", "fund_pamm")
+
+    if balance is None:
+        raise HTTPException(status_code=400, detail="Campo 'balance' mancante")
+
+    try:
+        balance_val = round(float(balance), 2)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Valore 'balance' non valido")
+
+    svc = supabase.table("services").select("id").eq("code", service_code).single().execute()
+    if not svc.data:
+        raise HTTPException(status_code=404, detail=f"Servizio '{service_code}' non trovato")
+
+    supabase.table("fund_movements").insert({
+        "service_id": svc.data["id"],
+        "amount":     balance_val,
+        "moved_at":   datetime.utcnow().isoformat(),
+        "type":       "balance_snapshot",
+        "notes":      f"Saldo MT4 aggiornato automaticamente dall'EA",
+    }).execute()
+
+    return {"ok": True, "balance": balance_val}
+
+
 @app.head("/health")
 async def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
