@@ -36,7 +36,8 @@ app.add_middleware(
 
 SUPABASE_URL         = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
-TELEGRAM_BOT_TOKEN   = os.environ["TELEGRAM_BOT_TOKEN"]
+TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+TELEGRAM_GOLD_BOT_TOKEN = os.environ.get("TELEGRAM_GOLD_BOT_TOKEN", "")
 TELEGRAM_API         = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 ADMIN_SECRET         = os.environ["ADMIN_SECRET"]
 SUPERADMIN_SECRET    = os.environ.get("SUPERADMIN_SECRET", "")
