@@ -305,6 +305,15 @@ async def telegram_webhook(request: Request):
 
     chat_id = message.get("chat", {}).get("id")
     msg_id  = message.get("message_id")
+   # Controllo duplicati — ignora se stesso message_id già processato
+    if msg_id:
+    existing = supabase.table("signals")\
+        .select("id")\
+        .eq("telegram_message_id", msg_id)\
+        .eq("telegram_chat_id", chat_id)\
+        .execute()
+    if existing.data:
+        return {"ok": True}
     text    = message.get("text") or message.get("caption", "")
     if not text:
         return {"ok": True}
