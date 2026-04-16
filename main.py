@@ -1134,29 +1134,92 @@ async def health():
 
 def send_web_push(title: str, body: str, url: str = '/', tag: str = 'iuppiter-signal'):
     """Manda push reale a tutti i dispositivi — funziona anche con app chiusa"""
-    print(f"PUSH: title={title} body={body} webpush_available={WEBPUSH_AVAILABLE}")
+    print(f"PUSH START: title={title} body={body} webpush_available={WEBPUSH_AVAILABLE}")
     if not WEBPUSH_AVAILABLE:
         print("PUSH SKIP: pywebpush non installato")
         return
     try:
         subs = supabase.table('push_subscriptions').select('endpoint, p256dh, auth').execute().data or []
-    except Exception:
+    except Exception as e:
+        print(f"PUSH ERROR - DB read failed: {e}")
         return
+    
+    print(f"PUSH: trovate {len(subs)} subscription(s)")
     failed = []
+    sent = 0
+    
     for sub in subs:
+        endpoint = sub.get('endpoint', '')
         try:
-            webpush(
-                subscription_info={'endpoint': sub['endpoint'], 'keys': {'p256dh': sub['p256dh'], 'auth': sub['auth']}},
-                data=_json.dumps({'title': title, 'body': body, 'url': url, 'tag': tag}),
+            # Estrai l'audience dall'endpoint per VAPID (richiesto da Apple)
+            from urllib.parse import urlparse
+            parsed = urlparse(endpoint)
+            aud = f"{parsed.scheme}://{parsed.netloc}"
+            
+            claims = {
+                "sub": "mailto:finanzalive@gmail.com",
+                "aud": aud
+            }
+            
+            result = webpush(
+                subscription_info={
+                    'endpoint': endpoint,
+                    'keys': {
+                        'p256dh': sub['p256dh'],
+                        'auth':   sub['auth']
+                    }
+                },
+                data=_json.dumps({
+                    'title': title,
+                    'body':  body,
+                    'url':   url,
+                    'tag':   tag
+                }),
                 vapid_private_key=VAPID_PRIVATE_KEY,
-                vapid_claims=VAPID_CLAIMS
+                vapid_claims=claims,
+                ttl=86400,  # 24h TTL — consegna anche se dispositivo offline
             )
+            sent += 1
+            print(f"PUSH OK: endpoint={endpoint[:60]}...")
+            
         except Exception as ex:
-            if hasattr(ex, 'response') and ex.response and ex.response.status_code == 410:
-                failed.append(sub['endpoint'])
+            status = None
+            response_text = ''
+            if hasattr(ex, 'response') and ex.response is not None:
+                status = ex.response.status_code
+                try: response_text = ex.response.text[:200]
+                except: pass
+            
+            print(f"PUSH ERROR: endpoint={endpoint[:60]} status={status} error={str(ex)[:200]} response={response_text}")
+            
+            if status == 410 or status == 404:
+                # Subscription scaduta/invalida → rimuovi
+                failed.append(endpoint)
+    
     if failed:
         for ep in failed:
-            supabase.table('push_subscriptions').delete().eq('endpoint', ep).execute()
+            try:
+                supabase.table('push_subscriptions').delete().eq('endpoint', ep).execute()
+                print(f"PUSH: rimossa subscription scaduta {ep[:60]}")
+            except Exception as e:
+                print(f"PUSH: errore rimozione subscription: {e}")
+    
+    print(f"PUSH DONE: inviato a {sent}/{len(subs)} dispositivi, rimossi {len(failed)}")
+
+
+@app.get("/api/push-test")
+async def push_test(x_admin_secret: str = Header(None)):
+    """Test push manuale — chiama da browser: /api/push-test?x_admin_secret=..."""
+    if x_admin_secret != ADMIN_SECRET:
+        raise HTTPException(status_code=403, detail="Accesso negato")
+    send_web_push(
+        title="🧪 Test IUPPITER",
+        body="Push di test — se ricevi questo funziona! 🎯",
+        url="/",
+        tag="test"
+    )
+    subs = supabase.table('push_subscriptions').select('endpoint').execute().data or []
+    return {"ok": True, "subscriptions": len(subs)}
 
 
 @app.post("/api/push-subscribe")
