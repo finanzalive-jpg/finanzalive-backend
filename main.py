@@ -24,8 +24,10 @@ from dotenv import load_dotenv
 try:
     from pywebpush import webpush, WebPushException
     WEBPUSH_AVAILABLE = True
-except ImportError:
+    print("✅ pywebpush disponibile")
+except ImportError as e:
     WEBPUSH_AVAILABLE = False
+    print(f"❌ pywebpush NON disponibile: {e}")
 
 # ── VAPID Keys per Web Push
 VAPID_PRIVATE_KEY = os.environ.get('VAPID_PRIVATE_KEY', 'KkM7YJ14xmRgKN6BV3UIAOVyI03P-HE-Nhe0_atvPYc')
@@ -863,6 +865,20 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
                 print(f"MT4 INSERT ERROR: {e}")
                 raise HTTPException(status_code=500, detail=f"DB insert error: {str(e)}")
 
+            # ── Push notifica apertura MT4
+            try:
+                svc_name_res = supabase.table("services").select("name").eq("id", service_id).execute()
+                svc_name = svc_name_res.data[0]["name"] if svc_name_res.data else service_code.upper()
+                emoji = "🚀" if direction == "BUY" else "🔻"
+                send_web_push(
+                    title=f"{emoji} {svc_name} — {direction}",
+                    body=f"{symbol} Apertura: {price_val}",
+                    url=f"/?service={service_code}",
+                    tag=f"open-{service_code}"
+                )
+            except Exception as pe:
+                print(f"MT4 push open error: {pe}")
+
             try:
                 supabase.table("signals").insert({
                     "service_id":   service_id,
@@ -924,6 +940,21 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
             except Exception as e:
                 print(f"MT4 UPDATE ERROR: {e}")
                 raise HTTPException(status_code=500, detail=f"DB update error: {str(e)}")
+
+            # ── Push notifica chiusura MT4
+            try:
+                svc_name_res = supabase.table("services").select("name").eq("id", service_id).execute()
+                svc_name = svc_name_res.data[0]["name"] if svc_name_res.data else service_code.upper()
+                emoji = "✅" if pnl_val >= 0 else "❌"
+                result_str = "GAIN" if pnl_val >= 0 else "LOSS"
+                send_web_push(
+                    title=f"{emoji} Chiusura {svc_name}",
+                    body=f"{result_str} {direction} {symbol} | PNL: {pnl_val:+.2f} €",
+                    url=f"/?service={service_code}",
+                    tag=f"close-{service_code}"
+                )
+            except Exception as pe:
+                print(f"MT4 push close error: {pe}")
 
             try:
                 supabase.table("signals").insert({
@@ -1103,7 +1134,9 @@ async def health():
 
 def send_web_push(title: str, body: str, url: str = '/', tag: str = 'iuppiter-signal'):
     """Manda push reale a tutti i dispositivi — funziona anche con app chiusa"""
+    print(f"PUSH: title={title} body={body} webpush_available={WEBPUSH_AVAILABLE}")
     if not WEBPUSH_AVAILABLE:
+        print("PUSH SKIP: pywebpush non installato")
         return
     try:
         subs = supabase.table('push_subscriptions').select('endpoint, p256dh, auth').execute().data or []
