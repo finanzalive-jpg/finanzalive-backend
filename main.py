@@ -21,6 +21,16 @@ import json as _json
 from datetime import datetime
 from supabase import create_client, Client
 from dotenv import load_dotenv
+try:
+    from pywebpush import webpush, WebPushException
+    WEBPUSH_AVAILABLE = True
+except ImportError:
+    WEBPUSH_AVAILABLE = False
+
+# ── VAPID Keys per Web Push
+VAPID_PRIVATE_KEY = os.environ.get('VAPID_PRIVATE_KEY', 'KkM7YJ14xmRgKN6BV3UIAOVyI03P-HE-Nhe0_atvPYc')
+VAPID_PUBLIC_KEY  = os.environ.get('VAPID_PUBLIC_KEY',  'BNtuePHDQcXHkdxzYJplRVQArnaRLDkur5T2CjMsVQZfGEIO7b47reg30dd9sCLznzEDq_B7c-dvRt7gtDRadKQ')
+VAPID_CLAIMS      = {"sub": "mailto:finanzalive@gmail.com"}
 
 load_dotenv()
 
@@ -227,6 +237,21 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
             if parsed.get("premium"):    insert_data["premium_collected"] = parsed["premium"]
             supabase.table("trades").insert(insert_data).execute()
             print(f"AUTO_TRADE OPEN inserted: {note_label} @ {parsed.get('price') or parsed.get('strike')}")
+            # ── Push notifica apertura
+            try:
+                svc_res = supabase.table("services").select("name").eq("id", service_id).execute()
+                svc_name = svc_res.data[0]["name"] if svc_res.data else service_code.upper()
+                direction = parsed.get("direction", "")
+                price_val = parsed.get("price") or parsed.get("strike") or 0
+                emoji = "🚀" if direction == "BUY" else "🔻"
+                send_web_push(
+                    title=f"{emoji} {svc_name} — {direction}",
+                    body=f"Apertura: {float(price_val):,.2f}",
+                    url=f"/?service={service_code}",
+                    tag=f"open-{service_code}"
+                )
+            except Exception as pe:
+                print(f"Push open error: {pe}")
 
         elif parsed["signal_type"] == "CLOSE":
             q = supabase.table("trades").select("id, strike, direction") \
@@ -283,6 +308,22 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
 
                 supabase.table("trades").update(update_data).eq("id", trade_id).execute()
                 print(f"AUTO_TRADE CLOSED: id={trade_id} symbol={symbol} pnl={update_data.get('pnl')}")
+                # ── Push notifica chiusura
+                try:
+                    svc_res = supabase.table("services").select("name").eq("id", service_id).execute()
+                    svc_name = svc_res.data[0]["name"] if svc_res.data else service_code.upper()
+                    pnl_val = update_data.get("pnl", 0) or 0
+                    direction = trade_direction or parsed.get("direction", "")
+                    emoji = "✅" if float(pnl_val) >= 0 else "❌"
+                    result = "GAIN" if float(pnl_val) >= 0 else "LOSS"
+                    send_web_push(
+                        title=f"{emoji} Chiusura {svc_name}",
+                        body=f"{result} {direction} | PNL: {float(pnl_val):+.2f} €",
+                        url=f"/?service={service_code}",
+                        tag=f"close-{service_code}"
+                    )
+                except Exception as pe:
+                    print(f"Push close error: {pe}")
             else:
                 print(f"AUTO_TRADE CLOSE: no open trade found for service={service_code}")
 
@@ -305,15 +346,15 @@ async def telegram_webhook(request: Request):
 
     chat_id = message.get("chat", {}).get("id")
     msg_id  = message.get("message_id")
-   # Controllo duplicati — ignora se stesso message_id già processato
+    # Controllo duplicati — ignora se stesso message_id già processato
     if msg_id:
-    existing = supabase.table("signals")\
-        .select("id")\
-        .eq("telegram_message_id", msg_id)\
-        .eq("telegram_chat_id", chat_id)\
-        .execute()
-    if existing.data:
-        return {"ok": True}
+        existing = supabase.table("signals")\
+            .select("id")\
+            .eq("telegram_message_id", msg_id)\
+            .eq("telegram_chat_id", chat_id)\
+            .execute()
+        if existing.data:
+            return {"ok": True}
     text    = message.get("text") or message.get("caption", "")
     if not text:
         return {"ok": True}
@@ -1056,3 +1097,57 @@ async def superadmin_logs(limit: int = 200, offset: int = 0):
 @app.head("/health")
 async def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+
+
+# ── WEB PUSH ──────────────────────────────────────────────────────────────────
+
+def send_web_push(title: str, body: str, url: str = '/', tag: str = 'iuppiter-signal'):
+    """Manda push reale a tutti i dispositivi — funziona anche con app chiusa"""
+    if not WEBPUSH_AVAILABLE:
+        return
+    try:
+        subs = supabase.table('push_subscriptions').select('endpoint, p256dh, auth').execute().data or []
+    except Exception:
+        return
+    failed = []
+    for sub in subs:
+        try:
+            webpush(
+                subscription_info={'endpoint': sub['endpoint'], 'keys': {'p256dh': sub['p256dh'], 'auth': sub['auth']}},
+                data=_json.dumps({'title': title, 'body': body, 'url': url, 'tag': tag}),
+                vapid_private_key=VAPID_PRIVATE_KEY,
+                vapid_claims=VAPID_CLAIMS
+            )
+        except Exception as ex:
+            if hasattr(ex, 'response') and ex.response and ex.response.status_code == 410:
+                failed.append(sub['endpoint'])
+    if failed:
+        for ep in failed:
+            supabase.table('push_subscriptions').delete().eq('endpoint', ep).execute()
+
+
+@app.post("/api/push-subscribe")
+async def push_subscribe(request: Request):
+    """Registra subscription push del dispositivo"""
+    data = await request.json()
+    if not data.get('endpoint') or not data.get('p256dh') or not data.get('auth'):
+        raise HTTPException(status_code=400, detail="Dati mancanti")
+    supabase.table('push_subscriptions').upsert({
+        'endpoint': data['endpoint'],
+        'p256dh':   data['p256dh'],
+        'auth':     data['auth'],
+        'user_id':  data.get('userId', ''),
+        'platform': data.get('platform', ''),
+    }, on_conflict='endpoint').execute()
+    return {"success": True}
+
+
+@app.post("/api/push-unsubscribe")
+async def push_unsubscribe(request: Request):
+    """Rimuovi subscription push"""
+    data = await request.json()
+    endpoint = data.get('endpoint')
+    if endpoint:
+        supabase.table('push_subscriptions').delete().eq('endpoint', endpoint).execute()
+    return {"success": True}
+
