@@ -1412,6 +1412,11 @@ async def change_password(data: dict, user=Depends(get_user)):
     # Aggiorna temp_password nel DB — admin la vedrà aggiornata
     supabase.table("clients").update({"temp_password": new_pass}).eq("id", str(user.id)).execute()
     print(f"PASSWORD CHANGED: cliente {c['email']} ha cambiato la password")
+    # Manda email notifica cambio password
+    try:
+        send_reset_email(email=c["email"], full_name=c.get("full_name","Cliente"), new_password=new_pass)
+    except Exception as e:
+        print(f"EMAIL CHANGE PASSWORD EXCEPTION: {e}")
     return {"ok": True}
 
 
