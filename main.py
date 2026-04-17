@@ -21,6 +21,11 @@ import json as _json
 from datetime import datetime
 from supabase import create_client, Client
 from dotenv import load_dotenv
+import smtplib
+
+# ── RESEND email
+RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
+EMAIL_FROM = 'IUPPITER <onboarding@resend.dev>'
 try:
     from pywebpush import webpush, WebPushException
     WEBPUSH_AVAILABLE = True
@@ -1148,6 +1153,77 @@ async def superadmin_logs(limit: int = 200, offset: int = 0):
 @app.head("/health")
 async def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+
+
+# ── EMAIL ──────────────────────────────────────────────────────────────────────
+
+def send_welcome_email(email: str, full_name: str, password: str):
+    """Manda email di benvenuto al nuovo cliente tramite Resend"""
+    if not RESEND_API_KEY:
+        print("EMAIL SKIP: RESEND_API_KEY non configurata")
+        return
+    try:
+        html_body = f"""
+        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:520px;margin:0 auto;background:#0a0a0c;color:#e8e6df;border-radius:16px;overflow:hidden;border:1px solid rgba(201,168,76,0.2)">
+          <div style="background:linear-gradient(135deg,#111318,#1a1d27);padding:32px;text-align:center;border-bottom:1px solid rgba(201,168,76,0.2)">
+            <div style="width:64px;height:64px;background:linear-gradient(135deg,#c9a84c,#e8c96a);border-radius:14px;display:inline-flex;align-items:center;justify-content:center;font-size:28px;font-weight:900;color:#0a0a0c;margin-bottom:16px">I</div>
+            <div style="font-size:26px;font-weight:900;color:#c9a84c;letter-spacing:3px">IUPPITER</div>
+            <div style="font-size:13px;color:#7a7870;margin-top:6px">Sistema di trading algoritmico</div>
+          </div>
+          <div style="padding:32px">
+            <h2 style="color:#e8e6df;font-size:20px;margin-bottom:8px">Benvenuto, {full_name}! 👋</h2>
+            <p style="color:#7a7870;font-size:14px;line-height:1.6;margin-bottom:24px">
+              Il tuo account IUPPITER è stato creato con successo.<br>
+              Puoi accedere alla piattaforma con le credenziali qui sotto.
+            </p>
+            <div style="background:#111318;border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:20px;margin-bottom:24px">
+              <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.05)">
+                <span style="font-size:12px;color:#7a7870">Email</span>
+                <span style="font-size:13px;font-weight:600">{email}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;padding:8px 0">
+                <span style="font-size:12px;color:#7a7870">Password</span>
+                <span style="font-size:13px;font-weight:700;font-family:monospace;background:#1a1d27;padding:3px 10px;border-radius:5px;color:#c9a84c">{password}</span>
+              </div>
+            </div>
+            <div style="text-align:center;margin-bottom:24px">
+              <a href="https://finanzalive-frontend.vercel.app" 
+                 style="display:inline-block;background:linear-gradient(135deg,#c9a84c,#e8c96a);color:#0a0a0c;font-weight:800;font-size:14px;padding:13px 32px;border-radius:10px;text-decoration:none">
+                Accedi alla piattaforma →
+              </a>
+            </div>
+            <p style="color:#7a7870;font-size:12px;line-height:1.5;margin:0">
+              Ti consigliamo di cambiare la password al primo accesso.<br>
+              Per assistenza contattaci su Telegram.
+            </p>
+          </div>
+          <div style="background:#111318;padding:16px;text-align:center;border-top:1px solid rgba(255,255,255,0.05)">
+            <p style="color:#7a7870;font-size:11px;margin:0">© 2025 IUPPITER · FinanzaLive · Il trading comporta rischi</p>
+          </div>
+        </div>
+        """
+
+        import httpx
+        response = httpx.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "from": EMAIL_FROM,
+                "to": [email],
+                "subject": "Benvenuto in IUPPITER — Le tue credenziali di accesso",
+                "html": html_body
+            },
+            timeout=10
+        )
+        if response.status_code == 200:
+            print(f"EMAIL OK: benvenuto inviato a {email}")
+        else:
+            print(f"EMAIL ERROR: status={response.status_code} body={response.text[:200]}")
+    except Exception as e:
+        print(f"EMAIL EXCEPTION: {e}")
 
 
 # ── WEB PUSH ──────────────────────────────────────────────────────────────────
