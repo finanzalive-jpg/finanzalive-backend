@@ -675,6 +675,14 @@ async def reset_client_password(client_id: str, data: dict, admin=Depends(requir
     supabase.auth.admin.update_user_by_id(client_id, {"password": new_pass})
     # Salva in chiaro nella tabella clients
     supabase.table("clients").update({"temp_password": new_pass}).eq("id", client_id).execute()
+    # Prendi email e nome per la mail
+    client_data = supabase.table("clients").select("email, full_name").eq("id", client_id).execute()
+    if client_data.data:
+        c = client_data.data[0]
+        try:
+            send_reset_email(email=c["email"], full_name=c.get("full_name","Cliente"), new_password=new_pass)
+        except Exception as e:
+            print(f"Reset email error: {e}")
     log_admin_action(
         action="RESET_CLIENT_PASSWORD",
         description=f"Password resettata per cliente ID {client_id}",
@@ -1228,6 +1236,64 @@ def send_welcome_email(email: str, full_name: str, password: str):
 
 # ── WEB PUSH ──────────────────────────────────────────────────────────────────
 
+def send_reset_email(email: str, full_name: str, new_password: str):
+    """Manda email di reset password al cliente tramite Resend"""
+    if not RESEND_API_KEY:
+        print("EMAIL SKIP: RESEND_API_KEY non configurata")
+        return
+    try:
+        import httpx
+        html_body = f"""
+        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:520px;margin:0 auto;background:#0a0a0c;color:#e8e6df;border-radius:16px;overflow:hidden;border:1px solid rgba(201,168,76,0.2)">
+          <div style="background:linear-gradient(135deg,#111318,#1a1d27);padding:32px;text-align:center;border-bottom:1px solid rgba(201,168,76,0.2)">
+            <div style="width:64px;height:64px;background:linear-gradient(135deg,#c9a84c,#e8c96a);border-radius:14px;display:inline-flex;align-items:center;justify-content:center;font-size:28px;font-weight:900;color:#0a0a0c;margin-bottom:16px">I</div>
+            <div style="font-size:26px;font-weight:900;color:#c9a84c;letter-spacing:3px">IUPPITER</div>
+          </div>
+          <div style="padding:32px">
+            <h2 style="color:#e8e6df;font-size:20px;margin-bottom:8px">Password aggiornata 🔑</h2>
+            <p style="color:#7a7870;font-size:14px;line-height:1.6;margin-bottom:24px">
+              Ciao {full_name},<br>
+              la tua password di accesso a IUPPITER è stata aggiornata dall'amministratore.
+            </p>
+            <div style="background:#111318;border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:20px;margin-bottom:24px">
+              <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.05)">
+                <span style="font-size:12px;color:#7a7870">Email</span>
+                <span style="font-size:13px;font-weight:600">{email}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;padding:8px 0">
+                <span style="font-size:12px;color:#7a7870">Nuova password</span>
+                <span style="font-size:13px;font-weight:700;font-family:monospace;background:#1a1d27;padding:3px 10px;border-radius:5px;color:#c9a84c">{new_password}</span>
+              </div>
+            </div>
+            <div style="text-align:center;margin-bottom:24px">
+              <a href="https://finanzalive-frontend.vercel.app"
+                 style="display:inline-block;background:linear-gradient(135deg,#c9a84c,#e8c96a);color:#0a0a0c;font-weight:800;font-size:14px;padding:13px 32px;border-radius:10px;text-decoration:none">
+                Accedi alla piattaforma →
+              </a>
+            </div>
+            <p style="color:#7a7870;font-size:12px;line-height:1.5;margin:0">
+              Se non hai richiesto questo cambiamento contatta l'assistenza su Telegram.
+            </p>
+          </div>
+          <div style="background:#111318;padding:16px;text-align:center;border-top:1px solid rgba(255,255,255,0.05)">
+            <p style="color:#7a7870;font-size:11px;margin:0">© 2025 IUPPITER · FinanzaLive</p>
+          </div>
+        </div>
+        """
+        response = httpx.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+            json={"from": EMAIL_FROM, "to": [email], "subject": "IUPPITER — La tua password è stata aggiornata", "html": html_body},
+            timeout=10
+        )
+        if response.status_code == 200:
+            print(f"EMAIL RESET OK: inviata a {email}")
+        else:
+            print(f"EMAIL RESET ERROR: {response.status_code} {response.text[:200]}")
+    except Exception as e:
+        print(f"EMAIL RESET EXCEPTION: {e}")
+
+
 def send_web_push(title: str, body: str, url: str = '/', tag: str = 'iuppiter-signal'):
     """Manda push reale a tutti i dispositivi — funziona anche con app chiusa"""
     print(f"PUSH START: title={title} body={body} webpush_available={WEBPUSH_AVAILABLE}")
@@ -1316,6 +1382,26 @@ async def push_test(x_admin_secret: str = Header(None)):
     )
     subs = supabase.table('push_subscriptions').select('endpoint').execute().data or []
     return {"ok": True, "subscriptions": len(subs)}
+
+
+@app.patch("/api/change-password")
+async def change_password(data: dict, user=Depends(get_user)):
+    """Cambio password lato cliente — aggiorna Supabase Auth e temp_password"""
+    new_pass = data.get("new_password", "")
+    old_pass = data.get("old_password", "")
+    if not new_pass or len(new_pass) < 6:
+        raise HTTPException(status_code=400, detail="Password minimo 6 caratteri")
+    # Verifica password attuale
+    client = supabase.table("clients").select("email, full_name, temp_password").eq("id", str(user.id)).execute()
+    if not client.data:
+        raise HTTPException(status_code=404, detail="Cliente non trovato")
+    c = client.data[0]
+    # Aggiorna su Supabase Auth
+    supabase.auth.admin.update_user_by_id(str(user.id), {"password": new_pass})
+    # Aggiorna temp_password nel DB — admin la vedrà aggiornata
+    supabase.table("clients").update({"temp_password": new_pass}).eq("id", str(user.id)).execute()
+    print(f"PASSWORD CHANGED: cliente {c['email']} ha cambiato la password")
+    return {"ok": True}
 
 
 @app.post("/api/push-subscribe")
