@@ -634,6 +634,7 @@ async def create_client(data: dict, admin=Depends(require_admin)):
         "id": uid, "full_name": data.get("full_name",""), "email": data["email"],
         "telegram_chat_id": data.get("telegram_chat_id"),
         "telegram_username": data.get("telegram_username"),
+        "temp_password": data.get("password", ""),  # salvata in chiaro per recupero admin
     }).execute()
     for svc_code in data.get("services", []):
         svc = supabase.table("services").select("id").eq("code", svc_code).single().execute()
@@ -658,6 +659,25 @@ async def create_client(data: dict, admin=Depends(require_admin)):
         admin_username=admin["username"]
     )
     return {"ok": True, "client_id": str(uid)}
+
+@app.patch("/admin/client/{client_id}/password")
+async def reset_client_password(client_id: str, data: dict, admin=Depends(require_admin)):
+    """Reset password cliente — aggiorna su Supabase Auth e salva in chiaro"""
+    new_pass = data.get("password", "")
+    if not new_pass or len(new_pass) < 6:
+        raise HTTPException(status_code=400, detail="Password minimo 6 caratteri")
+    # Aggiorna su Supabase Auth
+    supabase.auth.admin.update_user_by_id(client_id, {"password": new_pass})
+    # Salva in chiaro nella tabella clients
+    supabase.table("clients").update({"temp_password": new_pass}).eq("id", client_id).execute()
+    log_admin_action(
+        action="RESET_CLIENT_PASSWORD",
+        description=f"Password resettata per cliente ID {client_id}",
+        target_client_id=client_id,
+        admin_username=admin["username"]
+    )
+    return {"ok": True}
+
 
 @app.get("/admin/clients", dependencies=[Depends(require_admin)])
 async def list_clients():
