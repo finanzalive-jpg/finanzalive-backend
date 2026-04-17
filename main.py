@@ -663,6 +663,17 @@ async def create_client(data: dict, admin=Depends(require_admin)):
         },
         admin_username=admin["username"]
     )
+    # Manda email di benvenuto
+    print(f"EMAIL WELCOME: tentativo invio a {data['email']}")
+    try:
+        send_welcome_email(
+            email=data["email"],
+            full_name=data.get("full_name", "Cliente"),
+            password=data.get("password", "")
+        )
+    except Exception as e:
+        print(f"EMAIL WELCOME EXCEPTION: {e}")
+
     return {"ok": True, "client_id": str(uid)}
 
 @app.patch("/admin/client/{client_id}/password")
