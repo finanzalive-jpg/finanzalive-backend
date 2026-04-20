@@ -188,7 +188,7 @@ def parse_signal(text: str) -> dict:
     # ── MODIFICA 3: AZIONI ITALIA chiusura ────────────────────────────────
     # Formato: "CLOSE BUY RACE 📌 Uscita: 308.70"
     for sym in AZIONI_ITALIA_SYMBOLS:
-        if sym in t and ("CLOSE" in t or "CHIUSURA" in t):
+        if re.search(r"\b" + sym + r"\b", t) and ("CLOSE" in t or "CHIUSURA" in t):
             m_dir = re.search(r"(?:CLOSE|CHIUSURA)\s+(BUY|SELL)\s+" + sym, t)
             if m_dir:
                 data["signal_type"] = "CLOSE"
@@ -202,8 +202,8 @@ def parse_signal(text: str) -> dict:
     # ── AZIONI ITALIA ingresso ─────────────────────────────────────────────
     # Formato: "🚀 BUY RACE 📌 Entrata: 308.70 🎯 TP: 356.17"
     for sym in AZIONI_ITALIA_SYMBOLS:
-        if sym in t and ("BUY" in t or "SELL" in t) and "CLOSE" not in t and "CHIUSURA" not in t:
-            m_dir = re.search(r"\b(BUY|SELL)\b\s+" + sym, t)
+        if re.search(r"\b" + sym + r"\b", t) and ("BUY" in t or "SELL" in t) and "CLOSE" not in t and "CHIUSURA" not in t:
+            m_dir = re.search(r"\b(BUY|SELL)\b\s+" + r"\b" + sym + r"\b", t)
             if not m_dir:
                 m_dir = re.search(r"\b(BUY|SELL)\b", t)
             if m_dir:
