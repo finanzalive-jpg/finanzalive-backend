@@ -310,7 +310,7 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
                 print(f"Push open error: {pe}")
 
         elif parsed["signal_type"] == "CLOSE":
-            q = supabase.table("trades").select("id, strike, entry_price, direction") \
+            q = supabase.table("trades").select("id, strike, entry_price, direction, ticker, notes") \
                 .eq("service_id", service_id) \
                 .eq("status", "OPEN") \
                 .order("opened_at", desc=True) \
@@ -323,8 +323,10 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
             if q.data:
                 if symbol:
                     for trade in q.data:
-                        notes = trade.get("notes", "") or ""
-                        if symbol.upper() in notes.upper():
+                        notes  = trade.get("notes", "") or ""
+                        ticker = trade.get("ticker", "") or ""
+                        # Per azioni_italia controlla anche il campo ticker
+                        if symbol.upper() in notes.upper() or symbol.upper() == ticker.upper():
                             trade_id        = trade["id"]
                             trade_entry     = trade.get("entry_price") or trade.get("strike")
                             trade_direction = trade.get("direction")
