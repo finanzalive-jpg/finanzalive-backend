@@ -1,10 +1,10 @@
 """
 IUPPITER — Backend FastAPI v3
 Webhook Telegram + API dashboard clienti
-Parser automatico: Vanilla Mensile, Forex, Indici World
+Parser automatico: Vanilla Mensile, Forex, Indici World, Azioni Italia
 
 Sorgenti segnali:
-  - Telegram  → Gold, Vanilla Mensile, Vanilla Settimanale
+  - Telegram  → Gold, Vanilla Mensile, Vanilla Settimanale, Azioni Italia
   - MT4 (EA)  → Indici World, Forex, Fondo PAMM (e altri)
 """
 
@@ -51,25 +51,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SUPABASE_URL         = os.environ["SUPABASE_URL"]
-SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
-TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+SUPABASE_URL            = os.environ["SUPABASE_URL"]
+SUPABASE_SERVICE_KEY    = os.environ["SUPABASE_SERVICE_KEY"]
+TELEGRAM_BOT_TOKEN      = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_GOLD_BOT_TOKEN = os.environ.get("TELEGRAM_GOLD_BOT_TOKEN", "")
-TELEGRAM_API         = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
-ADMIN_SECRET         = os.environ["ADMIN_SECRET"]
-SUPERADMIN_SECRET    = os.environ.get("SUPERADMIN_SECRET", "")
+TELEGRAM_API            = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+ADMIN_SECRET            = os.environ["ADMIN_SECRET"]
+SUPERADMIN_SECRET       = os.environ.get("SUPERADMIN_SECRET", "")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
+# ── MODIFICA 1: aggiunto canale Azioni Italia ──────────────────────────────
 CHANNEL_SERVICE_MAP = {
     -1002552300319: "indices",
     -1002517239703: "vanilla_monthly",
     -1002870950901: "vanilla_weekly",
     -1002850487439: "forex",
     -1002628465268: "gold",
+    -1003953155928: "azioni_italia",    # ← NUOVO
 }
 
 INDEX_SYMBOLS = ["US100", "US30", "DE40", "JPN225"]
+
+# ── MODIFICA 2: lista simboli azioni italiane ──────────────────────────────
+AZIONI_ITALIA_SYMBOLS = [
+    "ENI", "ISP", "UCG", "LDO", "BC",
+    "AZM", "A2A", "ACE", "RACE", "ERG",
+]
 
 # ─────────────────────────────────────────────
 # PARSER SEGNALI
@@ -124,7 +132,7 @@ def parse_signal(text: str) -> dict:
     # GOLD ingresso
     if "GOLD" in t and ("BUY" in t or "LONG" in t or "ACQUISTO" in t) and "CHIUSURA" not in t and "CLOSE" not in t:
         data["signal_type"] = "OPEN"
-        data["symbol"] = "GOLD"
+        data["symbol"]    = "GOLD"
         data["direction"] = "BUY"
         m_price = re.search(r"(?:APERTURA|ENTRY|PREZZO|@)\s*:?\s*([\d,\.]+)", t)
         if m_price: data["price"] = float(m_price.group(1).replace(",", ""))
@@ -132,7 +140,7 @@ def parse_signal(text: str) -> dict:
 
     if "GOLD" in t and ("SELL" in t or "SHORT" in t or "VENDITA" in t) and "CHIUSURA" not in t and "CLOSE" not in t:
         data["signal_type"] = "OPEN"
-        data["symbol"] = "GOLD"
+        data["symbol"]    = "GOLD"
         data["direction"] = "SELL"
         m_price = re.search(r"(?:APERTURA|ENTRY|PREZZO|@)\s*:?\s*([\d,\.]+)", t)
         if m_price: data["price"] = float(m_price.group(1).replace(",", ""))
@@ -176,6 +184,38 @@ def parse_signal(text: str) -> dict:
             m_price = re.search(r"APERTURA:\s*([\d,\.]+)", t)
             if m_price: data["price"] = float(m_price.group(1).replace(",", ""))
             return data
+
+    # ── MODIFICA 3: AZIONI ITALIA chiusura ────────────────────────────────
+    # Formato: "CLOSE BUY RACE 📌 Uscita: 308.70"
+    for sym in AZIONI_ITALIA_SYMBOLS:
+        if sym in t and ("CLOSE" in t or "CHIUSURA" in t):
+            m_dir = re.search(r"(?:CLOSE|CHIUSURA)\s+(BUY|SELL)\s+" + sym, t)
+            if m_dir:
+                data["signal_type"] = "CLOSE"
+                data["symbol"]      = sym
+                data["direction"]   = m_dir.group(1)
+                m_exit = re.search(r"(?:USCITA|EXIT)\s*:?\s*([\d,\.]+)", t)
+                if m_exit: data["price"] = float(m_exit.group(1).replace(",", ""))
+                print(f"AZIONI_ITALIA CLOSE: sym={sym} dir={data['direction']} price={data.get('price')}")
+                return data
+
+    # ── AZIONI ITALIA ingresso ─────────────────────────────────────────────
+    # Formato: "🚀 BUY RACE 📌 Entrata: 308.70 🎯 TP: 356.17"
+    for sym in AZIONI_ITALIA_SYMBOLS:
+        if sym in t and ("BUY" in t or "SELL" in t) and "CLOSE" not in t and "CHIUSURA" not in t:
+            m_dir = re.search(r"\b(BUY|SELL)\b\s+" + sym, t)
+            if not m_dir:
+                m_dir = re.search(r"\b(BUY|SELL)\b", t)
+            if m_dir:
+                data["signal_type"] = "OPEN"
+                data["symbol"]      = sym
+                data["direction"]   = m_dir.group(1)
+                m_price = re.search(r"(?:ENTRATA|APERTURA|ENTRY)\s*:?\s*([\d,\.]+)", t)
+                if m_price: data["price"] = float(m_price.group(1).replace(",", ""))
+                m_tp = re.search(r"TP\s*:?\s*([\d,\.]+)", t)
+                if m_tp: data["tp"] = float(m_tp.group(1).replace(",", ""))
+                print(f"AZIONI_ITALIA OPEN: sym={sym} dir={data['direction']} price={data.get('price')} tp={data.get('tp')}")
+                return data
 
     # ── FIX #1: FOREX chiusura — formato "Alert for AUDCHF\nCLOSE SELL AUDCHF.ecn"
     m_sym_close = re.search(r"ALERT FOR ([A-Z]{6,7})", t)
@@ -222,8 +262,9 @@ def parse_signal(text: str) -> dict:
 # ─────────────────────────────────────────────
 async def auto_update_trades(service_id: int, service_code: str, parsed: dict, text: str):
     # MT4 gestisce: indices, forex, fund_pamm
-    # Telegram gestisce: gold, vanilla_monthly, vanilla_weekly
-    if service_code not in ["gold", "vanilla_monthly", "vanilla_weekly"]:
+    # Telegram gestisce: gold, vanilla_monthly, vanilla_weekly, azioni_italia
+    # ── MODIFICA 4b: aggiunto azioni_italia ──
+    if service_code not in ["gold", "vanilla_monthly", "vanilla_weekly", "azioni_italia"]:
         return
     try:
         symbol = parsed.get("symbol", "") or ""
@@ -238,15 +279,23 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
                 "opened_at":  datetime.utcnow().isoformat(),
                 "notes":      f"Auto - {note_label} {datetime.utcnow().strftime('%d/%m/%Y %H:%M')}",
             }
-            if parsed.get("strike"):     insert_data["strike"]           = parsed["strike"]
-            if parsed.get("price"):      insert_data["strike"]           = parsed["price"]
-            if parsed.get("strike_pct"): insert_data["strike_pct"]       = parsed["strike_pct"]
-            if parsed.get("premium"):    insert_data["premium_collected"] = parsed["premium"]
+            if parsed.get("strike"):     insert_data["strike"]            = parsed["strike"]
+            if parsed.get("price"):      insert_data["strike"]            = parsed["price"]
+            if parsed.get("strike_pct"): insert_data["strike_pct"]        = parsed["strike_pct"]
+            if parsed.get("premium"):    insert_data["premium_collected"]  = parsed["premium"]
+
+            # ── Campi specifici azioni italia ──
+            if service_code == "azioni_italia":
+                insert_data["ticker"]      = parsed.get("symbol")
+                insert_data["entry_price"] = parsed.get("price")
+                insert_data["timeframe"]   = "1W"
+
             supabase.table("trades").insert(insert_data).execute()
             print(f"AUTO_TRADE OPEN inserted: {note_label} @ {parsed.get('price') or parsed.get('strike')}")
+
             # ── Push notifica apertura
             try:
-                svc_res = supabase.table("services").select("name").eq("id", service_id).execute()
+                svc_res  = supabase.table("services").select("name").eq("id", service_id).execute()
                 svc_name = svc_res.data[0]["name"] if svc_res.data else service_code.upper()
                 direction = parsed.get("direction", "")
                 price_val = parsed.get("price") or parsed.get("strike") or 0
@@ -261,14 +310,14 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
                 print(f"Push open error: {pe}")
 
         elif parsed["signal_type"] == "CLOSE":
-            q = supabase.table("trades").select("id, strike, direction") \
+            q = supabase.table("trades").select("id, strike, entry_price, direction") \
                 .eq("service_id", service_id) \
                 .eq("status", "OPEN") \
                 .order("opened_at", desc=True) \
                 .execute()
 
-            trade_id = None
-            trade_entry = None
+            trade_id        = None
+            trade_entry     = None
             trade_direction = None
 
             if q.data:
@@ -276,21 +325,21 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
                     for trade in q.data:
                         notes = trade.get("notes", "") or ""
                         if symbol.upper() in notes.upper():
-                            trade_id = trade["id"]
-                            trade_entry = trade.get("strike")
+                            trade_id        = trade["id"]
+                            trade_entry     = trade.get("entry_price") or trade.get("strike")
                             trade_direction = trade.get("direction")
                             break
                     if not trade_id:
                         if service_code == "gold":
-                            trade_id = q.data[0]["id"]
-                            trade_entry = q.data[0].get("strike")
+                            trade_id        = q.data[0]["id"]
+                            trade_entry     = q.data[0].get("strike")
                             trade_direction = q.data[0].get("direction")
                         else:
                             print(f"AUTO_TRADE CLOSE: no OPEN trade found for symbol={symbol} in service={service_code}")
                             return
                 else:
-                    trade_id = q.data[0]["id"]
-                    trade_entry = q.data[0].get("strike")
+                    trade_id        = q.data[0]["id"]
+                    trade_entry     = q.data[0].get("entry_price") or q.data[0].get("strike")
                     trade_direction = q.data[0].get("direction")
 
             if trade_id:
@@ -302,26 +351,30 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
 
                 exit_price = parsed.get("price")
                 if exit_price and trade_entry:
-                    entry = float(trade_entry)
+                    entry     = float(trade_entry)
                     direction = trade_direction or parsed.get("direction", "")
                     if direction in ["BUY", "BUY_PUT"]:
                         pnl = round(exit_price - entry, 2)
                     else:
                         pnl = round(entry - exit_price, 2)
                     update_data["pnl"] = pnl
+                    # ── Salva exit_price per azioni italia ──
+                    if service_code == "azioni_italia":
+                        update_data["exit_price"] = exit_price
                     print(f"AUTO_TRADE PnL: entry={entry} exit={exit_price} dir={direction} pnl={pnl}")
                 elif parsed.get("pnl"):
                     update_data["pnl"] = parsed["pnl"]
 
                 supabase.table("trades").update(update_data).eq("id", trade_id).execute()
                 print(f"AUTO_TRADE CLOSED: id={trade_id} symbol={symbol} pnl={update_data.get('pnl')}")
+
                 # ── Push notifica chiusura
                 try:
-                    svc_res = supabase.table("services").select("name").eq("id", service_id).execute()
+                    svc_res  = supabase.table("services").select("name").eq("id", service_id).execute()
                     svc_name = svc_res.data[0]["name"] if svc_res.data else service_code.upper()
-                    pnl_val = update_data.get("pnl", 0) or 0
+                    pnl_val  = update_data.get("pnl", 0) or 0
                     direction = trade_direction or parsed.get("direction", "")
-                    emoji = "✅" if float(pnl_val) >= 0 else "❌"
+                    emoji  = "✅" if float(pnl_val) >= 0 else "❌"
                     result = "GAIN" if float(pnl_val) >= 0 else "LOSS"
                     send_web_push(
                         title=f"{emoji} Chiusura {svc_name}",
@@ -353,7 +406,7 @@ async def telegram_webhook(request: Request):
 
     chat_id = message.get("chat", {}).get("id")
     msg_id  = message.get("message_id")
-    # Controllo duplicati — ignora se stesso message_id già processato
+    # Controllo duplicati
     if msg_id:
         existing = supabase.table("signals")\
             .select("id")\
@@ -362,7 +415,8 @@ async def telegram_webhook(request: Request):
             .execute()
         if existing.data:
             return {"ok": True}
-    text    = message.get("text") or message.get("caption", "")
+
+    text = message.get("text") or message.get("caption", "")
     if not text:
         return {"ok": True}
 
@@ -370,9 +424,8 @@ async def telegram_webhook(request: Request):
     if not service_code:
         return {"ok": True}
 
-    # Solo gold, vanilla_monthly, vanilla_weekly sono gestiti da Telegram
-    # Tutti gli altri servizi (indices, forex, fund_pamm, ecc.) sono gestiti esclusivamente da MT4
-    if service_code not in ["gold", "vanilla_monthly", "vanilla_weekly"]:
+    # ── MODIFICA 4a: aggiunto azioni_italia ──
+    if service_code not in ["gold", "vanilla_monthly", "vanilla_weekly", "azioni_italia"]:
         return {"ok": True}
 
     try:
@@ -419,12 +472,15 @@ async def notify_subscribers(service_id: int, signal_id: int, text: str, service
     except:
         return
 
+    # ── MODIFICA 5: aggiunto nome azioni_italia ──
     svc_names = {
         "indices":         "🌐 Sala Indici World",
         "vanilla_monthly": "📅 Vanilla Mensile",
         "vanilla_weekly":  "📆 Vanilla Settimanale",
         "forex":           "💱 Sala Forex",
         "fund_pamm":       "💼 Fondo PAAM",
+        "gold":            "🥇 Sala Gold",
+        "azioni_italia":   "🇮🇹 Sala Azioni Italia",   # ← NUOVO
     }
     msg = f"🔔 *{svc_names.get(service_code, service_code)}*\n\n{text}"
 
@@ -511,7 +567,6 @@ def decode_admin_token(token: str):
 # AUTH DEPENDENCIES
 # ─────────────────────────────────────────────
 def require_admin(x_admin_secret: str = Header(None), x_admin_token: str = Header(None)):
-    """Accetta token utente admin OPPURE il secret legacy (usato dall'EA MT4)."""
     if x_admin_token:
         data = decode_admin_token(x_admin_token)
         if data:
@@ -522,12 +577,10 @@ def require_admin(x_admin_secret: str = Header(None), x_admin_token: str = Heade
     raise HTTPException(status_code=403, detail="Accesso negato")
 
 def require_superadmin(x_admin_token: str = Header(None), x_superadmin_secret: str = Header(None)):
-    """Verifica che sia un admin con flag is_superadmin, oppure il secret legacy."""
     if x_admin_token:
         data = decode_admin_token(x_admin_token)
         if data and data.get("sa"):
             return {"id": data["id"], "username": data["u"]}
-    # Fallback: secret diretto (per chiamate API esterne)
     if SUPERADMIN_SECRET and x_superadmin_secret == SUPERADMIN_SECRET:
         return {"id": "superadmin", "username": "superadmin"}
     raise HTTPException(status_code=403, detail="Accesso superadmin negato")
@@ -535,7 +588,6 @@ def require_superadmin(x_admin_token: str = Header(None), x_superadmin_secret: s
 def log_admin_action(action: str, description: str, target_email: str = None,
                      target_client_id: str = None, details: dict = None,
                      admin_username: str = None):
-    """Scrive un record di audit nella tabella admin_logs (fire-and-forget)"""
     try:
         supabase.table("admin_logs").insert({
             "action":           action,
@@ -637,56 +689,41 @@ async def create_client(data: dict, admin=Depends(require_admin)):
     uid = auth_user.user.id
     supabase.table("clients").insert({
         "id": uid, "full_name": data.get("full_name",""), "email": data["email"],
-        "telegram_chat_id": data.get("telegram_chat_id"),
+        "telegram_chat_id":  data.get("telegram_chat_id"),
         "telegram_username": data.get("telegram_username"),
-        "temp_password": data.get("password", ""),  # salvata in chiaro per recupero admin
+        "temp_password":     data.get("password", ""),
     }).execute()
     for svc_code in data.get("services", []):
         svc = supabase.table("services").select("id").eq("code", svc_code).single().execute()
         supabase.table("subscriptions").insert({
-            "client_id": uid, "service_id": svc.data["id"],
+            "client_id":  uid, "service_id": svc.data["id"],
             "expires_at": data.get("expires_at"),
-            "amount": data.get("amount"),
-            "notes": data.get("notes"),
+            "amount":     data.get("amount"),
+            "notes":      data.get("notes"),
         }).execute()
     log_admin_action(
         action="CREATE_CLIENT",
         description=f"Nuovo cliente creato: {data['email']} ({data.get('full_name','')})",
-        target_email=data["email"],
-        target_client_id=str(uid),
-        details={
-            "full_name": data.get("full_name", ""),
-            "services": data.get("services", []),
-            "expires_at": data.get("expires_at"),
-            "amount": data.get("amount"),
-            "telegram_username": data.get("telegram_username"),
-        },
+        target_email=data["email"], target_client_id=str(uid),
+        details={"full_name": data.get("full_name",""), "services": data.get("services",[]),
+                 "expires_at": data.get("expires_at"), "amount": data.get("amount"),
+                 "telegram_username": data.get("telegram_username")},
         admin_username=admin["username"]
     )
-    # Manda email di benvenuto
     print(f"EMAIL WELCOME: tentativo invio a {data['email']}")
     try:
-        send_welcome_email(
-            email=data["email"],
-            full_name=data.get("full_name", "Cliente"),
-            password=data.get("password", "")
-        )
+        send_welcome_email(email=data["email"], full_name=data.get("full_name","Cliente"), password=data.get("password",""))
     except Exception as e:
         print(f"EMAIL WELCOME EXCEPTION: {e}")
-
     return {"ok": True, "client_id": str(uid)}
 
 @app.patch("/admin/client/{client_id}/password")
 async def reset_client_password(client_id: str, data: dict, admin=Depends(require_admin)):
-    """Reset password cliente — aggiorna su Supabase Auth e salva in chiaro"""
     new_pass = data.get("password", "")
     if not new_pass or len(new_pass) < 6:
         raise HTTPException(status_code=400, detail="Password minimo 6 caratteri")
-    # Aggiorna su Supabase Auth
     supabase.auth.admin.update_user_by_id(client_id, {"password": new_pass})
-    # Salva in chiaro nella tabella clients
     supabase.table("clients").update({"temp_password": new_pass}).eq("id", client_id).execute()
-    # Prendi email e nome per la mail
     client_data = supabase.table("clients").select("email, full_name").eq("id", client_id).execute()
     if client_data.data:
         c = client_data.data[0]
@@ -694,14 +731,10 @@ async def reset_client_password(client_id: str, data: dict, admin=Depends(requir
             send_reset_email(email=c["email"], full_name=c.get("full_name","Cliente"), new_password=new_pass)
         except Exception as e:
             print(f"Reset email error: {e}")
-    log_admin_action(
-        action="RESET_CLIENT_PASSWORD",
-        description=f"Password resettata per cliente ID {client_id}",
-        target_client_id=client_id,
-        admin_username=admin["username"]
-    )
+    log_admin_action(action="RESET_CLIENT_PASSWORD",
+                     description=f"Password resettata per cliente ID {client_id}",
+                     target_client_id=client_id, admin_username=admin["username"])
     return {"ok": True}
-
 
 @app.get("/admin/clients", dependencies=[Depends(require_admin)])
 async def list_clients():
@@ -718,11 +751,7 @@ async def toggle_sub(client_id: str, service_code: str, active: bool, admin=Depe
         supabase.table("subscriptions").update({"active": active}) \
             .eq("client_id", client_id).eq("service_id", service_id).execute()
     else:
-        supabase.table("subscriptions").insert({
-            "client_id": client_id,
-            "service_id": service_id,
-            "active": active,
-        }).execute()
+        supabase.table("subscriptions").insert({"client_id": client_id, "service_id": service_id, "active": active}).execute()
     stato = "ATTIVATO" if active else "DISATTIVATO"
     try:
         cl = supabase.table("clients").select("email,full_name").eq("id", client_id).single().execute()
@@ -730,23 +759,20 @@ async def toggle_sub(client_id: str, service_code: str, active: bool, admin=Depe
         client_name  = cl.data.get("full_name","") if cl.data else ""
     except:
         client_email = None; client_name = ""
-    log_admin_action(
-        action="TOGGLE_SUBSCRIPTION",
-        description=f"Servizio '{service_code}' {stato} per {client_name or client_email or client_id}",
-        target_email=client_email,
-        target_client_id=client_id,
-        details={"service_code": service_code, "active": active},
-        admin_username=admin["username"]
-    )
+    log_admin_action(action="TOGGLE_SUBSCRIPTION",
+                     description=f"Servizio '{service_code}' {stato} per {client_name or client_email or client_id}",
+                     target_email=client_email, target_client_id=client_id,
+                     details={"service_code": service_code, "active": active},
+                     admin_username=admin["username"])
     return {"ok": True}
 
 @app.patch("/admin/subscription/{client_id}/{service_code}/renew")
 async def renew_sub(client_id: str, service_code: str, data: dict, admin=Depends(require_admin)):
     svc = supabase.table("services").select("id").eq("code", service_code).single().execute()
     update_data = {"active": True}
-    if data.get("expires_at"): update_data["expires_at"] = data["expires_at"]
-    if data.get("amount") is not None: update_data["amount"] = data["amount"]
-    if data.get("notes") is not None: update_data["notes"] = data["notes"]
+    if data.get("expires_at"):         update_data["expires_at"] = data["expires_at"]
+    if data.get("amount") is not None: update_data["amount"]     = data["amount"]
+    if data.get("notes") is not None:  update_data["notes"]      = data["notes"]
     supabase.table("subscriptions").update(update_data) \
         .eq("client_id", client_id).eq("service_id", svc.data["id"]).execute()
     try:
@@ -755,14 +781,11 @@ async def renew_sub(client_id: str, service_code: str, data: dict, admin=Depends
         client_name  = cl.data.get("full_name","") if cl.data else ""
     except:
         client_email = None; client_name = ""
-    log_admin_action(
-        action="RENEW_SUBSCRIPTION",
-        description=f"Abbonamento '{service_code}' rinnovato per {client_name or client_email or client_id}",
-        target_email=client_email,
-        target_client_id=client_id,
-        details={"service_code": service_code, **update_data},
-        admin_username=admin["username"]
-    )
+    log_admin_action(action="RENEW_SUBSCRIPTION",
+                     description=f"Abbonamento '{service_code}' rinnovato per {client_name or client_email or client_id}",
+                     target_email=client_email, target_client_id=client_id,
+                     details={"service_code": service_code, **update_data},
+                     admin_username=admin["username"])
     return {"ok": True}
 
 @app.get("/admin/signals", dependencies=[Depends(require_admin)])
@@ -773,18 +796,10 @@ async def admin_signals(limit: int = 100):
 @app.get("/api/quotes")
 async def get_quotes():
     symbols = {
-        "S&P 500":   "%5EGSPC",
-        "Nasdaq":    "%5EIXIC",
-        "Dow Jones": "%5EDJI",
-        "DAX":       "%5EGDAXI",
-        "Nikkei":    "%5EN225",
-        "UK 100":    "%5EFTSE",
-        "EUR/USD":   "EURUSD%3DX",
-        "Oro":       "GC%3DF",
-        "Petrolio":  "CL%3DF",
-        "Bitcoin":   "BTC-USD",
-        "VIX":       "%5EVIX",
-        "BTP 10Y":   "BTP10Y%3DX",
+        "S&P 500": "%5EGSPC", "Nasdaq": "%5EIXIC", "Dow Jones": "%5EDJI",
+        "DAX": "%5EGDAXI", "Nikkei": "%5EN225", "UK 100": "%5EFTSE",
+        "EUR/USD": "EURUSD%3DX", "Oro": "GC%3DF", "Petrolio": "CL%3DF",
+        "Bitcoin": "BTC-USD", "VIX": "%5EVIX", "BTP 10Y": "BTP10Y%3DX",
     }
     results = []
     async with httpx.AsyncClient(timeout=8) as client:
@@ -792,19 +807,13 @@ async def get_quotes():
             try:
                 r = await client.get(
                     f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=2d",
-                    headers={"User-Agent": "Mozilla/5.0"}
-                )
+                    headers={"User-Agent": "Mozilla/5.0"})
                 d = r.json()
-                meta = d["chart"]["result"][0]["meta"]
+                meta  = d["chart"]["result"][0]["meta"]
                 price = meta.get("regularMarketPrice", 0)
                 prev  = meta.get("previousClose") or meta.get("chartPreviousClose", price)
                 chg   = ((price - prev) / prev * 100) if prev else 0
-                results.append({
-                    "name":   name,
-                    "price":  round(price, 4),
-                    "change": round(chg, 2),
-                    "up":     chg >= 0
-                })
+                results.append({"name": name, "price": round(price, 4), "change": round(chg, 2), "up": chg >= 0})
             except:
                 results.append({"name": name, "price": 0, "change": 0, "up": True, "error": True})
     return results
@@ -818,33 +827,22 @@ async def create_news(data: dict, admin=Depends(require_admin)):
     msg = data["message"]
     supabase.table("news").insert({"message": msg, "active": True}).execute()
     preview = msg[:80] + ("..." if len(msg) > 80 else "")
-    log_admin_action(
-        action="CREATE_NEWS",
-        description=f"Nuova news pubblicata: {preview}",
-        details={"message": msg},
-        admin_username=admin["username"]
-    )
+    log_admin_action(action="CREATE_NEWS", description=f"Nuova news pubblicata: {preview}",
+                     details={"message": msg}, admin_username=admin["username"])
     return {"ok": True}
 
 @app.delete("/admin/news/{news_id}")
 async def delete_news(news_id: int, admin=Depends(require_admin)):
     supabase.table("news").update({"active": False}).eq("id", news_id).execute()
-    log_admin_action(
-        action="DELETE_NEWS",
-        description=f"News id={news_id} disattivata",
-        details={"news_id": news_id},
-        admin_username=admin["username"]
-    )
+    log_admin_action(action="DELETE_NEWS", description=f"News id={news_id} disattivata",
+                     details={"news_id": news_id}, admin_username=admin["username"])
     return {"ok": True}
 
 # ─────────────────────────────────────────────
 # MT4 TRADE ENDPOINT
-# FIX: rimosso .like() che causava Cloudflare 1101
-# Il filtro per ticket viene fatto in Python con startswith()
 # ─────────────────────────────────────────────
 @app.post("/mt4/trade")
 async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
-    """Riceve operazioni da EA MT4"""
     if x_admin_secret != ADMIN_SECRET:
         raise HTTPException(status_code=403, detail="Accesso negato")
     try:
@@ -858,7 +856,6 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
     symbol       = data.get("symbol", "")
     direction    = data.get("direction")
     ticket_note  = f"MT4-{ticket}"
-
     print(f"MT4 incoming: action={action} service={service_code} ticket={ticket} sym={symbol} dir={direction}")
 
     try:
@@ -866,70 +863,49 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
         if not svc_res.data:
             raise HTTPException(status_code=404, detail=f"Servizio {service_code} non trovato nel DB")
         service_id = svc_res.data[0]["id"]
-        print(f"MT4 service_id={service_id} per code={service_code}")
     except HTTPException:
         raise
     except Exception as e:
-        print(f"MT4 service lookup error: {e}")
         raise HTTPException(status_code=500, detail=f"Service lookup error: {str(e)}")
 
     if action == "OPEN":
-        price     = data.get("price", 0)
-        # open_time dall'EA è ora broker (UTC+2/+3) — usiamo utcnow() per coerenza col resto del DB
+        price = data.get("price", 0)
         try:
             price_val = round(float(price), 5) if price else None
         except:
             price_val = None
-
-        # Fetch tutti i trades aperti del servizio e filtra in Python
-        # (evita .like() che causa Cloudflare 1101)
         try:
             all_open = supabase.table("trades").select("id,notes") \
                 .eq("service_id", service_id).eq("status", "OPEN").execute()
-            already = any(
-                (t.get("notes") or "").startswith(ticket_note)
-                for t in (all_open.data or [])
-            )
+            already = any((t.get("notes") or "").startswith(ticket_note) for t in (all_open.data or []))
         except Exception as e:
-            print(f"MT4 duplicate check warn: {e}")
-            already = False
+            print(f"MT4 duplicate check warn: {e}"); already = False
 
         if not already:
             try:
                 supabase.table("trades").insert({
-                    "service_id": service_id,
-                    "direction":  direction,
-                    "strike":     price_val,
-                    "status":     "OPEN",
-                    "opened_at":  datetime.utcnow().isoformat(),
-                    "notes":      f"{ticket_note} {symbol}",
+                    "service_id": service_id, "direction": direction,
+                    "strike": price_val, "status": "OPEN",
+                    "opened_at": datetime.utcnow().isoformat(),
+                    "notes": f"{ticket_note} {symbol}",
                 }).execute()
                 print(f"MT4 OPEN OK: {symbol} {direction} @ {price_val} ticket={ticket}")
             except Exception as e:
-                print(f"MT4 INSERT ERROR: {e}")
                 raise HTTPException(status_code=500, detail=f"DB insert error: {str(e)}")
-
-            # ── Push notifica apertura MT4
             try:
                 svc_name_res = supabase.table("services").select("name").eq("id", service_id).execute()
                 svc_name = svc_name_res.data[0]["name"] if svc_name_res.data else service_code.upper()
                 emoji = "🚀" if direction == "BUY" else "🔻"
-                send_web_push(
-                    title=f"{emoji} {svc_name} — {direction}",
-                    body=f"{symbol} Apertura: {price_val}",
-                    url=f"/?service={service_code}",
-                    tag=f"open-{service_code}"
-                )
+                send_web_push(title=f"{emoji} {svc_name} — {direction}",
+                              body=f"{symbol} Apertura: {price_val}",
+                              url=f"/?service={service_code}", tag=f"open-{service_code}")
             except Exception as pe:
                 print(f"MT4 push open error: {pe}")
-
             try:
                 supabase.table("signals").insert({
-                    "service_id":   service_id,
+                    "service_id": service_id,
                     "message_text": f"Alert for {symbol} {direction} Apertura: {price_val}",
-                    "signal_type":  "OPEN",
-                    "direction":    direction,
-                    "strike":       price_val,
+                    "signal_type": "OPEN", "direction": direction, "strike": price_val,
                 }).execute()
             except Exception as e:
                 print(f"MT4 signal warn: {e}")
@@ -939,86 +915,65 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
     elif action == "CLOSE":
         close_price = data.get("close_price", 0)
         pnl         = data.get("pnl", 0)
-        # close_time dall'EA è ora broker — usiamo utcnow() per coerenza
         try:
             pnl_val   = round(float(pnl), 2) if pnl is not None else 0
             close_val = round(float(close_price), 5) if close_price else None
         except:
             pnl_val = 0; close_val = None
 
-        # Idempotency: se il trade esiste già come CLOSED, rispondi OK e non fare nulla
         try:
             all_trades = supabase.table("trades").select("id,notes,status") \
                 .eq("service_id", service_id).execute()
             already_closed = any(
                 (t.get("notes") or "").startswith(ticket_note) and t.get("status") == "CLOSED"
-                for t in (all_trades.data or [])
-            )
+                for t in (all_trades.data or []))
             if already_closed:
-                print(f"MT4 CLOSE: ticket={ticket} già CLOSED in DB, skip (idempotent)")
+                print(f"MT4 CLOSE: ticket={ticket} già CLOSED, skip (idempotent)")
                 return {"ok": True, "action": action, "ticket": ticket}
         except Exception as e:
             print(f"MT4 idempotency check warn: {e}")
 
-        # Fetch tutti i trades aperti e filtra in Python
         try:
             all_open = supabase.table("trades").select("id,notes") \
                 .eq("service_id", service_id).eq("status", "OPEN").execute()
-            matching = [
-                t for t in (all_open.data or [])
-                if (t.get("notes") or "").startswith(ticket_note)
-            ]
+            matching = [t for t in (all_open.data or []) if (t.get("notes") or "").startswith(ticket_note)]
         except Exception as e:
-            print(f"MT4 CLOSE search error: {e}")
-            matching = []
+            print(f"MT4 CLOSE search error: {e}"); matching = []
 
         if matching:
             trade_id = matching[0]["id"]
             try:
                 supabase.table("trades").update({
-                    "status":    "CLOSED",
-                    "closed_at": datetime.utcnow().isoformat(),
-                    "pnl":       pnl_val,
+                    "status": "CLOSED", "closed_at": datetime.utcnow().isoformat(), "pnl": pnl_val,
                 }).eq("id", trade_id).execute()
                 print(f"MT4 CLOSE OK: ticket={ticket} PnL={pnl_val}")
             except Exception as e:
-                print(f"MT4 UPDATE ERROR: {e}")
                 raise HTTPException(status_code=500, detail=f"DB update error: {str(e)}")
-
-            # ── Push notifica chiusura MT4
             try:
                 svc_name_res = supabase.table("services").select("name").eq("id", service_id).execute()
-                svc_name = svc_name_res.data[0]["name"] if svc_name_res.data else service_code.upper()
-                emoji = "✅" if pnl_val >= 0 else "❌"
+                svc_name  = svc_name_res.data[0]["name"] if svc_name_res.data else service_code.upper()
+                emoji     = "✅" if pnl_val >= 0 else "❌"
                 result_str = "GAIN" if pnl_val >= 0 else "LOSS"
-                send_web_push(
-                    title=f"{emoji} Chiusura {svc_name}",
-                    body=f"{result_str} {direction} {symbol} | PNL: {pnl_val:+.2f} €",
-                    url=f"/?service={service_code}",
-                    tag=f"close-{service_code}"
-                )
+                send_web_push(title=f"{emoji} Chiusura {svc_name}",
+                              body=f"{result_str} {direction} {symbol} | PNL: {pnl_val:+.2f} €",
+                              url=f"/?service={service_code}", tag=f"close-{service_code}")
             except Exception as pe:
                 print(f"MT4 push close error: {pe}")
-
             try:
                 supabase.table("signals").insert({
-                    "service_id":   service_id,
+                    "service_id": service_id,
                     "message_text": f"Alert for {symbol} Chiusura {direction} Uscita: {close_val}",
-                    "signal_type":  "CLOSE",
-                    "direction":    direction,
-                    "strike":       close_val,
-                    "pnl":          pnl_val,
+                    "signal_type": "CLOSE", "direction": direction, "strike": close_val, "pnl": pnl_val,
                 }).execute()
             except Exception as e:
                 print(f"MT4 signal close warn: {e}")
         else:
-            print(f"MT4 CLOSE: ticket={ticket} not found in DB (notes prefix: {ticket_note})")
+            print(f"MT4 CLOSE: ticket={ticket} not found in DB")
 
     return {"ok": True, "action": action, "ticket": ticket}
 
 @app.get("/api/fund_movements")
 async def get_fund_movements(service_code: str = None, user=Depends(get_user)):
-    """Movimenti di capitale — solo deposit/withdrawal per i clienti (no fee)"""
     subs = supabase.table("subscriptions") \
         .select("service_id, services(code)").eq("client_id", str(user.id)).eq("active", True).execute()
     allowed_codes = [s["services"]["code"] for s in subs.data]
@@ -1028,22 +983,18 @@ async def get_fund_movements(service_code: str = None, user=Depends(get_user)):
         svc = supabase.table("services").select("id").eq("code", service_code).execute()
         if not svc.data:
             raise HTTPException(status_code=404, detail="Servizio non trovato")
-        service_id = svc.data[0]["id"]
-        result = supabase.table("fund_movements") \
-            .select("*").eq("service_id", service_id) \
+        result = supabase.table("fund_movements").select("*").eq("service_id", svc.data[0]["id"]) \
             .in_("type", ["deposit","withdrawal","adjustment","balance_snapshot"]) \
             .order("moved_at", desc=False).execute()
     else:
         allowed_ids = [s["service_id"] for s in subs.data]
-        result = supabase.table("fund_movements") \
-            .select("*").in_("service_id", allowed_ids) \
+        result = supabase.table("fund_movements").select("*").in_("service_id", allowed_ids) \
             .in_("type", ["deposit","withdrawal","adjustment","balance_snapshot"]) \
             .order("moved_at", desc=False).execute()
     return result.data
 
 @app.get("/admin/fund_movements", dependencies=[Depends(require_admin)])
 async def admin_fund_movements(service_id: int = None):
-    """Tutti i movimenti incluse fee — solo admin"""
     q = supabase.table("fund_movements").select("*")
     if service_id:
         q = q.eq("service_id", service_id)
@@ -1054,73 +1005,49 @@ async def create_fund_movement(data: dict, admin=Depends(require_admin)):
     amount_val = round(float(data["amount"]), 2)
     mov_type   = data["type"]
     supabase.table("fund_movements").insert({
-        "service_id": data["service_id"],
-        "amount":     amount_val,
-        "moved_at":   data.get("moved_at", datetime.utcnow().isoformat()),
-        "type":       mov_type,
-        "notes":      data.get("notes", ""),
+        "service_id": data["service_id"], "amount": amount_val,
+        "moved_at": data.get("moved_at", datetime.utcnow().isoformat()),
+        "type": mov_type, "notes": data.get("notes", ""),
     }).execute()
-    log_admin_action(
-        action="CREATE_FUND_MOVEMENT",
-        description=f"Movimento fondo inserito: tipo={mov_type}, importo={amount_val}EUR, service_id={data['service_id']}",
-        details={
-            "service_id": data["service_id"],
-            "amount": amount_val,
-            "type": mov_type,
-            "notes": data.get("notes", ""),
-            "moved_at": data.get("moved_at"),
-        },
-        admin_username=admin["username"]
-    )
+    log_admin_action(action="CREATE_FUND_MOVEMENT",
+                     description=f"Movimento fondo: tipo={mov_type}, importo={amount_val}EUR",
+                     details={"service_id": data["service_id"], "amount": amount_val,
+                              "type": mov_type, "notes": data.get("notes",""), "moved_at": data.get("moved_at")},
+                     admin_username=admin["username"])
     return {"ok": True}
 
 @app.delete("/admin/fund_movements/{movement_id}")
 async def delete_fund_movement(movement_id: int, admin=Depends(require_admin)):
     supabase.table("fund_movements").delete().eq("id", movement_id).execute()
-    log_admin_action(
-        action="DELETE_FUND_MOVEMENT",
-        description=f"Movimento fondo eliminato: id={movement_id}",
-        details={"movement_id": movement_id},
-        admin_username=admin["username"]
-    )
+    log_admin_action(action="DELETE_FUND_MOVEMENT", description=f"Movimento fondo eliminato: id={movement_id}",
+                     details={"movement_id": movement_id}, admin_username=admin["username"])
     return {"ok": True}
-
 
 @app.post("/mt4/balance")
 async def mt4_balance(request: Request, x_admin_secret: str = Header(None)):
-    """Riceve il saldo reale del conto MT4 dall'EA e lo salva come balance_snapshot"""
     if x_admin_secret != ADMIN_SECRET:
         raise HTTPException(status_code=403, detail="Accesso negato")
     try:
         data = await request.json()
     except:
         raise HTTPException(status_code=400, detail="JSON non valido")
-
     balance      = data.get("balance")
     service_code = data.get("service_code", "fund_pamm")
-
     if balance is None:
         raise HTTPException(status_code=400, detail="Campo 'balance' mancante")
-
     try:
         balance_val = round(float(balance), 2)
     except (ValueError, TypeError):
         raise HTTPException(status_code=400, detail="Valore 'balance' non valido")
-
     svc = supabase.table("services").select("id").eq("code", service_code).single().execute()
     if not svc.data:
         raise HTTPException(status_code=404, detail=f"Servizio '{service_code}' non trovato")
-
     supabase.table("fund_movements").insert({
-        "service_id": svc.data["id"],
-        "amount":     balance_val,
-        "moved_at":   datetime.utcnow().isoformat(),
-        "type":       "balance_snapshot",
-        "notes":      f"Saldo MT4 aggiornato automaticamente dall'EA",
+        "service_id": svc.data["id"], "amount": balance_val,
+        "moved_at": datetime.utcnow().isoformat(),
+        "type": "balance_snapshot", "notes": "Saldo MT4 aggiornato automaticamente dall'EA",
     }).execute()
-
     return {"ok": True, "balance": balance_val}
-
 
 @app.get("/superadmin/admin_users", dependencies=[Depends(require_superadmin)])
 async def list_admin_users():
@@ -1129,8 +1056,8 @@ async def list_admin_users():
 
 @app.post("/superadmin/admin_users", dependencies=[Depends(require_superadmin)])
 async def create_admin_user(data: dict):
-    username = (data.get("username") or "").strip()
-    password = data.get("password") or ""
+    username  = (data.get("username") or "").strip()
+    password  = data.get("password") or ""
     full_name = data.get("full_name", "").strip()
     if not username or not password:
         raise HTTPException(status_code=400, detail="Username e password obbligatori")
@@ -1138,11 +1065,9 @@ async def create_admin_user(data: dict):
     if existing.data:
         raise HTTPException(status_code=409, detail="Username già esistente")
     supabase.table("admin_users").insert({
-        "username":       username,
-        "full_name":      full_name,
-        "password_hash":  hash_password(password),
-        "active":         True,
-        "is_superadmin":  bool(data.get("is_superadmin", False)),
+        "username": username, "full_name": full_name,
+        "password_hash": hash_password(password),
+        "active": True, "is_superadmin": bool(data.get("is_superadmin", False)),
     }).execute()
     return {"ok": True, "username": username}
 
@@ -1161,26 +1086,17 @@ async def reset_admin_password(admin_id: str, data: dict):
 
 @app.get("/superadmin/logs", dependencies=[Depends(require_superadmin)])
 async def superadmin_logs(limit: int = 200, offset: int = 0):
-    """Giornale audit — solo superadmin"""
-    result = supabase.table("admin_logs") \
-        .select("*") \
-        .order("created_at", desc=True) \
-        .range(offset, offset + limit - 1) \
-        .execute()
-    return result.data
+    return supabase.table("admin_logs").select("*").order("created_at", desc=True) \
+        .range(offset, offset + limit - 1).execute().data
 
 @app.head("/health")
 async def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
 
-
 # ── EMAIL ──────────────────────────────────────────────────────────────────────
-
 def send_welcome_email(email: str, full_name: str, password: str):
-    """Manda email di benvenuto al nuovo cliente tramite Resend"""
     if not RESEND_API_KEY:
-        print("EMAIL SKIP: RESEND_API_KEY non configurata")
-        return
+        print("EMAIL SKIP: RESEND_API_KEY non configurata"); return
     try:
         html_body = f"""
         <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:520px;margin:0 auto;background:#0a0a0c;color:#e8e6df;border-radius:16px;overflow:hidden;border:1px solid rgba(201,168,76,0.2)">
@@ -1191,10 +1107,7 @@ def send_welcome_email(email: str, full_name: str, password: str):
           </div>
           <div style="padding:32px">
             <h2 style="color:#e8e6df;font-size:20px;margin-bottom:8px">Benvenuto, {full_name}! 👋</h2>
-            <p style="color:#7a7870;font-size:14px;line-height:1.6;margin-bottom:24px">
-              Il tuo account IUPPITER è stato creato con successo.<br>
-              Puoi accedere alla piattaforma con le credenziali qui sotto.
-            </p>
+            <p style="color:#7a7870;font-size:14px;line-height:1.6;margin-bottom:24px">Il tuo account IUPPITER è stato creato con successo.</p>
             <div style="background:#111318;border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:20px;margin-bottom:24px">
               <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.05)">
                 <span style="font-size:12px;color:#7a7870">Email</span>
@@ -1206,242 +1119,134 @@ def send_welcome_email(email: str, full_name: str, password: str):
               </div>
             </div>
             <div style="text-align:center;margin-bottom:24px">
-              <a href="https://finanzalive-frontend.vercel.app" 
-                 style="display:inline-block;background:linear-gradient(135deg,#c9a84c,#e8c96a);color:#0a0a0c;font-weight:800;font-size:14px;padding:13px 32px;border-radius:10px;text-decoration:none">
-                Accedi alla piattaforma →
-              </a>
+              <a href="https://finanzalive-frontend.vercel.app" style="display:inline-block;background:linear-gradient(135deg,#c9a84c,#e8c96a);color:#0a0a0c;font-weight:800;font-size:14px;padding:13px 32px;border-radius:10px;text-decoration:none">Accedi alla piattaforma →</a>
             </div>
-            <p style="color:#7a7870;font-size:12px;line-height:1.5;margin:0">
-              Ti consigliamo di cambiare la password al primo accesso.<br>
-              Per assistenza contattaci su Telegram.
-            </p>
           </div>
           <div style="background:#111318;padding:16px;text-align:center;border-top:1px solid rgba(255,255,255,0.05)">
             <p style="color:#7a7870;font-size:11px;margin:0">© 2025 IUPPITER · FinanzaLive · Il trading comporta rischi</p>
           </div>
-        </div>
-        """
-
-        import httpx
-        response = httpx.post(
-            "https://api.resend.com/emails",
-            headers={
-                "Authorization": f"Bearer {RESEND_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "from": EMAIL_FROM,
-                "to": [email],
-                "subject": "Benvenuto in IUPPITER — Le tue credenziali di accesso",
-                "html": html_body
-            },
-            timeout=10
-        )
-        if response.status_code == 200:
-            print(f"EMAIL OK: benvenuto inviato a {email}")
-        else:
-            print(f"EMAIL ERROR: status={response.status_code} body={response.text[:200]}")
+        </div>"""
+        import httpx as _httpx
+        response = _httpx.post("https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+            json={"from": EMAIL_FROM, "to": [email],
+                  "subject": "Benvenuto in IUPPITER — Le tue credenziali di accesso", "html": html_body}, timeout=10)
+        print(f"EMAIL OK: benvenuto inviato a {email}" if response.status_code == 200 else f"EMAIL ERROR: {response.status_code}")
     except Exception as e:
         print(f"EMAIL EXCEPTION: {e}")
 
-
-# ── WEB PUSH ──────────────────────────────────────────────────────────────────
-
 def send_reset_email(email: str, full_name: str, new_password: str):
-    """Manda email di reset password al cliente tramite Resend"""
     if not RESEND_API_KEY:
-        print("EMAIL SKIP: RESEND_API_KEY non configurata")
-        return
+        print("EMAIL SKIP: RESEND_API_KEY non configurata"); return
     try:
-        import httpx
+        import httpx as _httpx
         html_body = f"""
         <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:520px;margin:0 auto;background:#0a0a0c;color:#e8e6df;border-radius:16px;overflow:hidden;border:1px solid rgba(201,168,76,0.2)">
           <div style="background:linear-gradient(135deg,#111318,#1a1d27);padding:32px;text-align:center;border-bottom:1px solid rgba(201,168,76,0.2)">
-            <div style="width:64px;height:64px;background:linear-gradient(135deg,#c9a84c,#e8c96a);border-radius:14px;display:inline-flex;align-items:center;justify-content:center;font-size:28px;font-weight:900;color:#0a0a0c;margin-bottom:16px">I</div>
             <div style="font-size:26px;font-weight:900;color:#c9a84c;letter-spacing:3px">IUPPITER</div>
           </div>
           <div style="padding:32px">
             <h2 style="color:#e8e6df;font-size:20px;margin-bottom:8px">Password aggiornata 🔑</h2>
-            <p style="color:#7a7870;font-size:14px;line-height:1.6;margin-bottom:24px">
-              Ciao {full_name},<br>
-              la tua password di accesso a IUPPITER è stata aggiornata dall'amministratore.
-            </p>
+            <p style="color:#7a7870;font-size:14px;line-height:1.6;margin-bottom:24px">Ciao {full_name}, la tua password è stata aggiornata.</p>
             <div style="background:#111318;border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:20px;margin-bottom:24px">
-              <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.05)">
-                <span style="font-size:12px;color:#7a7870">Email</span>
-                <span style="font-size:13px;font-weight:600">{email}</span>
-              </div>
               <div style="display:flex;justify-content:space-between;padding:8px 0">
                 <span style="font-size:12px;color:#7a7870">Nuova password</span>
                 <span style="font-size:13px;font-weight:700;font-family:monospace;background:#1a1d27;padding:3px 10px;border-radius:5px;color:#c9a84c">{new_password}</span>
               </div>
             </div>
-            <div style="text-align:center;margin-bottom:24px">
-              <a href="https://finanzalive-frontend.vercel.app"
-                 style="display:inline-block;background:linear-gradient(135deg,#c9a84c,#e8c96a);color:#0a0a0c;font-weight:800;font-size:14px;padding:13px 32px;border-radius:10px;text-decoration:none">
-                Accedi alla piattaforma →
-              </a>
+            <div style="text-align:center">
+              <a href="https://finanzalive-frontend.vercel.app" style="display:inline-block;background:linear-gradient(135deg,#c9a84c,#e8c96a);color:#0a0a0c;font-weight:800;font-size:14px;padding:13px 32px;border-radius:10px;text-decoration:none">Accedi →</a>
             </div>
-            <p style="color:#7a7870;font-size:12px;line-height:1.5;margin:0">
-              Se non hai richiesto questo cambiamento contatta l'assistenza su Telegram.
-            </p>
           </div>
-          <div style="background:#111318;padding:16px;text-align:center;border-top:1px solid rgba(255,255,255,0.05)">
-            <p style="color:#7a7870;font-size:11px;margin:0">© 2025 IUPPITER · FinanzaLive</p>
-          </div>
-        </div>
-        """
-        response = httpx.post(
-            "https://api.resend.com/emails",
+        </div>"""
+        response = _httpx.post("https://api.resend.com/emails",
             headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
-            json={"from": EMAIL_FROM, "to": [email], "subject": "IUPPITER — La tua password è stata aggiornata", "html": html_body},
-            timeout=10
-        )
-        if response.status_code == 200:
-            print(f"EMAIL RESET OK: inviata a {email}")
-        else:
-            print(f"EMAIL RESET ERROR: {response.status_code} {response.text[:200]}")
+            json={"from": EMAIL_FROM, "to": [email],
+                  "subject": "IUPPITER — La tua password è stata aggiornata", "html": html_body}, timeout=10)
+        print(f"EMAIL RESET OK: inviata a {email}" if response.status_code == 200 else f"EMAIL RESET ERROR: {response.status_code}")
     except Exception as e:
         print(f"EMAIL RESET EXCEPTION: {e}")
 
-
+# ── WEB PUSH ──────────────────────────────────────────────────────────────────
 def send_web_push(title: str, body: str, url: str = '/', tag: str = 'iuppiter-signal'):
-    """Manda push reale a tutti i dispositivi — funziona anche con app chiusa"""
     print(f"PUSH START: title={title} body={body} webpush_available={WEBPUSH_AVAILABLE}")
     if not WEBPUSH_AVAILABLE:
-        print("PUSH SKIP: pywebpush non installato")
-        return
+        print("PUSH SKIP: pywebpush non installato"); return
     try:
         subs = supabase.table('push_subscriptions').select('endpoint, p256dh, auth').execute().data or []
     except Exception as e:
-        print(f"PUSH ERROR - DB read failed: {e}")
-        return
-    
+        print(f"PUSH ERROR - DB read failed: {e}"); return
     print(f"PUSH: trovate {len(subs)} subscription(s)")
-    failed = []
-    sent = 0
-    
+    failed = []; sent = 0
     for sub in subs:
         endpoint = sub.get('endpoint', '')
         try:
-            # Estrai l'audience dall'endpoint per VAPID (richiesto da Apple)
             from urllib.parse import urlparse
             parsed = urlparse(endpoint)
-            aud = f"{parsed.scheme}://{parsed.netloc}"
-            
-            claims = {
-                "sub": "mailto:finanzalive@gmail.com",
-                "aud": aud
-            }
-            
+            aud    = f"{parsed.scheme}://{parsed.netloc}"
             result = webpush(
-                subscription_info={
-                    'endpoint': endpoint,
-                    'keys': {
-                        'p256dh': sub['p256dh'],
-                        'auth':   sub['auth']
-                    }
-                },
-                data=_json.dumps({
-                    'title': title,
-                    'body':  body,
-                    'url':   url,
-                    'tag':   tag
-                }),
+                subscription_info={'endpoint': endpoint, 'keys': {'p256dh': sub['p256dh'], 'auth': sub['auth']}},
+                data=_json.dumps({'title': title, 'body': body, 'url': url, 'tag': tag}),
                 vapid_private_key=VAPID_PRIVATE_KEY,
-                vapid_claims=claims,
-                ttl=86400,  # 24h TTL — consegna anche se dispositivo offline
+                vapid_claims={"sub": "mailto:finanzalive@gmail.com", "aud": aud},
+                ttl=86400,
             )
             sent += 1
             print(f"PUSH OK: endpoint={endpoint[:60]}...")
-            
         except Exception as ex:
-            status = None
-            response_text = ''
-            if hasattr(ex, 'response') and ex.response is not None:
-                status = ex.response.status_code
-                try: response_text = ex.response.text[:200]
-                except: pass
-            
-            print(f"PUSH ERROR: endpoint={endpoint[:60]} status={status} error={str(ex)[:200]} response={response_text}")
-            
-            if status == 410 or status == 404:
-                # Subscription scaduta/invalida → rimuovi
+            status = getattr(getattr(ex, 'response', None), 'status_code', None)
+            print(f"PUSH ERROR: endpoint={endpoint[:60]} status={status} error={str(ex)[:200]}")
+            if status in (410, 404):
                 failed.append(endpoint)
-    
-    if failed:
-        for ep in failed:
-            try:
-                supabase.table('push_subscriptions').delete().eq('endpoint', ep).execute()
-                print(f"PUSH: rimossa subscription scaduta {ep[:60]}")
-            except Exception as e:
-                print(f"PUSH: errore rimozione subscription: {e}")
-    
+    for ep in failed:
+        try:
+            supabase.table('push_subscriptions').delete().eq('endpoint', ep).execute()
+            print(f"PUSH: rimossa subscription scaduta {ep[:60]}")
+        except Exception as e:
+            print(f"PUSH: errore rimozione: {e}")
     print(f"PUSH DONE: inviato a {sent}/{len(subs)} dispositivi, rimossi {len(failed)}")
-
 
 @app.get("/api/push-test")
 async def push_test(x_admin_secret: str = Header(None)):
-    """Test push manuale — chiama da browser: /api/push-test?x_admin_secret=..."""
     if x_admin_secret != ADMIN_SECRET:
         raise HTTPException(status_code=403, detail="Accesso negato")
-    send_web_push(
-        title="🧪 Test IUPPITER",
-        body="Push di test — se ricevi questo funziona! 🎯",
-        url="/",
-        tag="test"
-    )
+    send_web_push(title="🧪 Test IUPPITER", body="Push di test — funziona! 🎯", url="/", tag="test")
     subs = supabase.table('push_subscriptions').select('endpoint').execute().data or []
     return {"ok": True, "subscriptions": len(subs)}
 
-
 @app.patch("/api/change-password")
 async def change_password(data: dict, user=Depends(get_user)):
-    """Cambio password lato cliente — aggiorna Supabase Auth e temp_password"""
     new_pass = data.get("new_password", "")
-    old_pass = data.get("old_password", "")
     if not new_pass or len(new_pass) < 6:
         raise HTTPException(status_code=400, detail="Password minimo 6 caratteri")
-    # Verifica password attuale
     client = supabase.table("clients").select("email, full_name, temp_password").eq("id", str(user.id)).execute()
     if not client.data:
         raise HTTPException(status_code=404, detail="Cliente non trovato")
     c = client.data[0]
-    # Aggiorna su Supabase Auth
     supabase.auth.admin.update_user_by_id(str(user.id), {"password": new_pass})
-    # Aggiorna temp_password nel DB — admin la vedrà aggiornata
     supabase.table("clients").update({"temp_password": new_pass}).eq("id", str(user.id)).execute()
-    print(f"PASSWORD CHANGED: cliente {c['email']} ha cambiato la password")
-    # Manda email notifica cambio password
+    print(f"PASSWORD CHANGED: cliente {c['email']}")
     try:
         send_reset_email(email=c["email"], full_name=c.get("full_name","Cliente"), new_password=new_pass)
     except Exception as e:
         print(f"EMAIL CHANGE PASSWORD EXCEPTION: {e}")
     return {"ok": True}
 
-
 @app.post("/api/push-subscribe")
 async def push_subscribe(request: Request):
-    """Registra subscription push del dispositivo"""
     data = await request.json()
     if not data.get('endpoint') or not data.get('p256dh') or not data.get('auth'):
         raise HTTPException(status_code=400, detail="Dati mancanti")
     supabase.table('push_subscriptions').upsert({
-        'endpoint': data['endpoint'],
-        'p256dh':   data['p256dh'],
-        'auth':     data['auth'],
-        'user_id':  data.get('userId', ''),
-        'platform': data.get('platform', ''),
+        'endpoint': data['endpoint'], 'p256dh': data['p256dh'], 'auth': data['auth'],
+        'user_id': data.get('userId', ''), 'platform': data.get('platform', ''),
     }, on_conflict='endpoint').execute()
     return {"success": True}
 
-
 @app.post("/api/push-unsubscribe")
 async def push_unsubscribe(request: Request):
-    """Rimuovi subscription push"""
     data = await request.json()
     endpoint = data.get('endpoint')
     if endpoint:
         supabase.table('push_subscriptions').delete().eq('endpoint', endpoint).execute()
     return {"success": True}
-
