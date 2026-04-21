@@ -69,6 +69,7 @@ CHANNEL_SERVICE_MAP = {
     -1002850487439: "forex",
     -1002628465268: "gold",
     -1003953155928: "azioni_italia",    # ← NUOVO
+    -1002257080204: "azioni_usa",      # ← Canale Azioni USA
 }
 
 INDEX_SYMBOLS = ["US100", "US30", "DE40", "JPN225"]
@@ -185,6 +186,38 @@ def parse_signal(text: str) -> dict:
             if m_price: data["price"] = float(m_price.group(1).replace(",", ""))
             return data
 
+    # ── AZIONI USA chiusura ────────────────────────────────────────────────────
+    # Formato: "CLOSE BUY AAPL 📌 Uscita: 195.50"
+    for sym in AZIONI_USA_SYMBOLS:
+        if re.search(r"\b" + sym.replace(".","\.") + r"\b", t) and ("CLOSE" in t or "CHIUSURA" in t):
+            m_dir = re.search(r"(?:CLOSE|CHIUSURA)\s+(BUY|SELL)\s+" + sym.replace(".","\."), t)
+            if m_dir:
+                data["signal_type"] = "CLOSE"
+                data["symbol"]      = sym
+                data["direction"]   = m_dir.group(1)
+                m_exit = re.search(r"(?:USCITA|EXIT)\s*:?\s*([\d,\.]+)", t)
+                if m_exit: data["price"] = float(m_exit.group(1).replace(",",""))
+                print(f"AZIONI_USA CLOSE: sym={sym} dir={data['direction']} price={data.get('price')}")
+                return data
+
+    # ── AZIONI USA ingresso ──────────────────────────────────────────────────
+    # Formato: "🚀 BUY AAPL 📌 Entrata: 195.50 🎯 TP: 210.00"
+    for sym in AZIONI_USA_SYMBOLS:
+        if re.search(r"\b" + sym.replace(".","\.") + r"\b", t) and ("BUY" in t or "SELL" in t) and "CLOSE" not in t and "CHIUSURA" not in t:
+            m_dir = re.search(r"\b(BUY|SELL)\b\s+\b" + sym.replace(".","\.") + r"\b", t)
+            if not m_dir:
+                m_dir = re.search(r"\b(BUY|SELL)\b", t)
+            if m_dir:
+                data["signal_type"] = "OPEN"
+                data["symbol"]      = sym
+                data["direction"]   = m_dir.group(1)
+                m_price = re.search(r"(?:ENTRATA|APERTURA|ENTRY)\s*:?\s*([\d,\.]+)", t)
+                if m_price: data["price"] = float(m_price.group(1).replace(",",""))
+                m_tp = re.search(r"TP\s*:?\s*([\d,\.]+)", t)
+                if m_tp: data["tp"] = float(m_tp.group(1).replace(",",""))
+                print(f"AZIONI_USA OPEN: sym={sym} dir={data['direction']} price={data.get('price')} tp={data.get('tp')}")
+                return data
+
     # ── MODIFICA 3: AZIONI ITALIA chiusura ────────────────────────────────
     # Formato: "CLOSE BUY RACE 📌 Uscita: 308.70"
     for sym in AZIONI_ITALIA_SYMBOLS:
@@ -264,7 +297,7 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
     # MT4 gestisce: indices, forex, fund_pamm
     # Telegram gestisce: gold, vanilla_monthly, vanilla_weekly, azioni_italia
     # ── MODIFICA 4b: aggiunto azioni_italia ──
-    if service_code not in ["gold", "vanilla_monthly", "vanilla_weekly", "azioni_italia"]:
+    if service_code not in ["gold", "vanilla_monthly", "vanilla_weekly", "azioni_italia", "azioni_usa"]:
         return
     try:
         symbol = parsed.get("symbol", "") or ""
@@ -285,7 +318,7 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
             if parsed.get("premium"):    insert_data["premium_collected"]  = parsed["premium"]
 
             # ── Campi specifici azioni italia ──
-            if service_code == "azioni_italia":
+            if service_code in ["azioni_italia", "azioni_usa"]:
                 insert_data["ticker"]      = parsed.get("symbol")
                 insert_data["entry_price"] = parsed.get("price")
                 insert_data["timeframe"]   = "1W"
@@ -360,8 +393,8 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
                     else:
                         pnl = round(entry - exit_price, 2)
                     update_data["pnl"] = pnl
-                    # ── Salva exit_price per azioni italia ──
-                    if service_code == "azioni_italia":
+                    # ── Salva exit_price per azioni ──
+                    if service_code in ["azioni_italia", "azioni_usa"]:
                         update_data["exit_price"] = exit_price
                     print(f"AUTO_TRADE PnL: entry={entry} exit={exit_price} dir={direction} pnl={pnl}")
                 elif parsed.get("pnl"):
@@ -427,7 +460,7 @@ async def telegram_webhook(request: Request):
         return {"ok": True}
 
     # ── MODIFICA 4a: aggiunto azioni_italia ──
-    if service_code not in ["gold", "vanilla_monthly", "vanilla_weekly", "azioni_italia"]:
+    if service_code not in ["gold", "vanilla_monthly", "vanilla_weekly", "azioni_italia", "azioni_usa"]:
         return {"ok": True}
 
     try:
@@ -482,7 +515,8 @@ async def notify_subscribers(service_id: int, signal_id: int, text: str, service
         "forex":           "💱 Sala Forex",
         "fund_pamm":       "💼 Fondo PAAM",
         "gold":            "🥇 Sala Gold",
-        "azioni_italia":   "🇮🇹 Sala Azioni Italia",   # ← NUOVO
+        "azioni_italia":   "🇮🇹 Sala Azioni Italia",
+        "azioni_usa":      "🇺🇸 Sala Azioni USA",
     }
     msg = f"🔔 *{svc_names.get(service_code, service_code)}*\n\n{text}"
 
