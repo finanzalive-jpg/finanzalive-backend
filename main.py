@@ -77,7 +77,16 @@ INDEX_SYMBOLS = ["US100", "US30", "DE40", "JPN225"]
 # ── MODIFICA 2: lista simboli azioni italiane ──────────────────────────────
 AZIONI_ITALIA_SYMBOLS = [
     "ENI", "ISP", "UCG", "LDO", "BC",
-    "AZM", "A2A", "ACE", "RACE", "ERG",
+    "AZM", "A2A", "ACE", "RACE", "ERG", "MONC",
+]
+
+# ── Lista simboli azioni USA (39 titoli) ────────────────────────────────────
+AZIONI_USA_SYMBOLS = [
+    "VSAT", "NTAP", "SNOW", "BILL", "DNA", "ABCL", "OKLO", "BWXT", "FLR", "USAR",
+    "QBTS", "IONQ", "BTDR", "QUBT", "RDW", "ASTS", "CRCL", "RGTI", "COIN",
+    "SMCI", "QCOM", "PLTR", "NVDA", "MU", "MSFT", "MRVL", "META", "MCHP",
+    "GOOGL", "CRUS", "AVGO", "AMZN", "ADBE", "AAPL",
+    "UBER", "TSLA", "TEM", "SYM", "SOUN",
 ]
 
 # ─────────────────────────────────────────────
