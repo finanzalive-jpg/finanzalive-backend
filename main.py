@@ -80,13 +80,15 @@ AZIONI_ITALIA_SYMBOLS = [
     "AZM", "A2A", "ACE", "RACE", "ERG", "MONC",
 ]
 
-# ── Lista simboli azioni USA (39 titoli) ────────────────────────────────────
+# ── Lista simboli azioni USA (lista dinamica — aggiungere nuovi ticker qui) ─
 AZIONI_USA_SYMBOLS = [
     "VSAT", "NTAP", "SNOW", "BILL", "DNA", "ABCL", "OKLO", "BWXT", "FLR", "USAR",
     "QBTS", "IONQ", "BTDR", "QUBT", "RDW", "ASTS", "CRCL", "RGTI", "COIN",
     "SMCI", "QCOM", "PLTR", "NVDA", "MU", "MSFT", "MRVL", "META", "MCHP",
     "GOOGL", "CRUS", "AVGO", "AMZN", "ADBE", "AAPL",
     "UBER", "TSLA", "TEM", "SYM", "SOUN",
+    # Nuovi ticker aggiunti automaticamente dal canale
+    "NKLR", "NNE", "FIGR", "ANET", "VUAA", "1MC",
 ]
 
 # ─────────────────────────────────────────────
@@ -196,7 +198,7 @@ def parse_signal(text: str) -> dict:
             return data
 
     # ── AZIONI USA chiusura ────────────────────────────────────────────────────
-    # Formato: "CLOSE BUY AAPL 📌 Uscita: 195.50"
+    # Formato: "CLOSE BUY AAPL 📌 Uscita: 195.50" oppure "CLOSE BUY ANET" (senza prezzo)
     for sym in AZIONI_USA_SYMBOLS:
         if re.search(r"\b" + sym.replace(".","\.") + r"\b", t) and ("CLOSE" in t or "CHIUSURA" in t):
             m_dir = re.search(r"(?:CLOSE|CHIUSURA)\s+(BUY|SELL)\s+" + sym.replace(".","\."), t)
@@ -206,11 +208,13 @@ def parse_signal(text: str) -> dict:
                 data["direction"]   = m_dir.group(1)
                 m_exit = re.search(r"(?:USCITA|EXIT)\s*:?\s*([\d,\.]+)", t)
                 if m_exit: data["price"] = float(m_exit.group(1).replace(",",""))
+                # Se non c'è prezzo uscita, viene chiuso al mercato (price=None)
                 print(f"AZIONI_USA CLOSE: sym={sym} dir={data['direction']} price={data.get('price')}")
                 return data
 
     # ── AZIONI USA ingresso ──────────────────────────────────────────────────
-    # Formato: "🚀 BUY AAPL 📌 Entrata: 195.50 🎯 TP: 210.00"
+    # Formato A: "🚀 BUY AAPL 📌 Entrata: 195.50 🎯 TP: 210.00"
+    # Formato B: "🚀 BUY AAPL 📌 Apertura a mercato 🎯 TP: 210.00" (nessun prezzo)
     for sym in AZIONI_USA_SYMBOLS:
         if re.search(r"\b" + sym.replace(".","\.") + r"\b", t) and ("BUY" in t or "SELL" in t) and "CLOSE" not in t and "CHIUSURA" not in t:
             m_dir = re.search(r"\b(BUY|SELL)\b\s+\b" + sym.replace(".","\.") + r"\b", t)
@@ -220,8 +224,11 @@ def parse_signal(text: str) -> dict:
                 data["signal_type"] = "OPEN"
                 data["symbol"]      = sym
                 data["direction"]   = m_dir.group(1)
-                m_price = re.search(r"(?:ENTRATA|APERTURA|ENTRY)\s*:?\s*([\d,\.]+)", t)
-                if m_price: data["price"] = float(m_price.group(1).replace(",",""))
+                # Cerca prezzo numerico dopo ENTRATA/APERTURA/ENTRY
+                m_price = re.search(r"(?:ENTRATA|ENTRY)\s*:?\s*([\d,\.]+)", t)
+                if m_price:
+                    data["price"] = float(m_price.group(1).replace(",",""))
+                # "Apertura a mercato" = ingresso al prezzo di mercato, price resta None
                 m_tp = re.search(r"TP\s*:?\s*([\d,\.]+)", t)
                 if m_tp: data["tp"] = float(m_tp.group(1).replace(",",""))
                 print(f"AZIONI_USA OPEN: sym={sym} dir={data['direction']} price={data.get('price')} tp={data.get('tp')}")
@@ -397,15 +404,21 @@ async def auto_update_trades(service_id: int, service_code: str, parsed: dict, t
                 if exit_price and trade_entry:
                     entry     = float(trade_entry)
                     direction = trade_direction or parsed.get("direction", "")
-                    if direction in ["BUY", "BUY_PUT"]:
-                        pnl = round(exit_price - entry, 2)
-                    else:
-                        pnl = round(entry - exit_price, 2)
-                    update_data["pnl"] = pnl
-                    # ── Salva exit_price per azioni ──
+                    # ── Azioni: capitale fisso €1000 → PnL = diff × (1000/entry) ──
                     if service_code in ["azioni_italia", "azioni_usa"]:
+                        qty = round(1000 / entry, 4)
+                        if direction in ["BUY", "BUY_PUT"]:
+                            pnl = round((exit_price - entry) * qty, 2)
+                        else:
+                            pnl = round((entry - exit_price) * qty, 2)
                         update_data["exit_price"] = exit_price
-                    print(f"AUTO_TRADE PnL: entry={entry} exit={exit_price} dir={direction} pnl={pnl}")
+                    else:
+                        if direction in ["BUY", "BUY_PUT"]:
+                            pnl = round(exit_price - entry, 2)
+                        else:
+                            pnl = round(entry - exit_price, 2)
+                    update_data["pnl"] = pnl
+                    print(f"AUTO_TRADE PnL: entry={entry} exit={exit_price} dir={direction} qty={round(1000/entry,4) if service_code in ['azioni_italia','azioni_usa'] else 1} pnl={pnl}")
                 elif parsed.get("pnl"):
                     update_data["pnl"] = parsed["pnl"]
 
