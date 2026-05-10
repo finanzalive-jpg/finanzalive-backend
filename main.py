@@ -103,6 +103,32 @@ def parse_signal(text: str) -> dict:
     }
     t = text.upper()
 
+    # VANILLA: MONITORING ATTIVO — va riconosciuto PRIMA dell'ingresso
+    # Contiene STRIKE: e SELL PUT ma NON e' un ingresso
+    if "MONITORING ATTIVO" in t and ("SELL PUT" in t or "BUY PUT" in t or "SELL_PUT" in t):
+        data["signal_type"] = "ALERT"
+        data["direction"] = "SELL_PUT" if ("SELL PUT" in t or "SELL_PUT" in t) else "BUY_PUT"
+        m = re.search(r"STRIKE:\s*([\d,\.]+)", t)
+        if m: data["strike"] = float(m.group(1).replace(",", ""))
+        m = re.search(r"MTM:\s*([+-]?[\d,\.]+)", t)
+        if m: data["pnl"] = float(m.group(1).replace(",", ""))
+        print(f"VANILLA MONITORING parsed: direction={data['direction']} strike={data['strike']}")
+        return data
+
+    # VANILLA: USCITA EMERGENZA — chiusura esplicita con perdita MTM (BS)
+    if "USCITA EMERGENZA" in t and ("SELL PUT" in t or "BUY PUT" in t or "SELL_PUT" in t):
+        data["signal_type"] = "CLOSE"
+        data["direction"] = "SELL_PUT" if ("SELL PUT" in t or "SELL_PUT" in t) else "BUY_PUT"
+        m = re.search(r"STRIKE:\s*([\d,\.]+)", t)
+        if m: data["strike"] = float(m.group(1).replace(",", ""))
+        m = re.search(r"MAX DD:\s*([\d\.]+)", t)
+        if m: data["drawdown_max"] = float(m.group(1))
+        m = re.search(r"PERDITA MTM \(BS\):\s*-?([\d,\.]+)EUR", t)
+        if m: data["pnl"] = -float(m.group(1).replace(",", ""))
+        else: data["pnl"] = -1
+        print(f"VANILLA EMERGENZA parsed: direction={data['direction']} strike={data['strike']} pnl={data['pnl']}")
+        return data
+
     # VANILLA MENSILE chiusura — va controllata PRIMA dell'ingresso
     if "CHIUSURA PUTSELL" in t or "CHIUSURA PUTBUY" in t:
         data["signal_type"] = "CLOSE"
