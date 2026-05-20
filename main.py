@@ -167,25 +167,35 @@ def parse_signal(text: str) -> dict:
                 data["premium"]    = round(data["strike_pct"] * 100, 2)
         return data
 
-    # GOLD ingresso
-    if "GOLD" in t and ("BUY" in t or "LONG" in t or "ACQUISTO" in t) and "CHIUSURA" not in t and "CLOSE" not in t:
+    # GOLD / XAUUSD — broker ha cambiato simbolo da GOLD a XAUUSD, riconosciamo entrambi
+    is_gold = "GOLD" in t or "XAUUSD" in t
+
+    # GOLD / XAUUSD ingresso BUY
+    if is_gold and ("BUY" in t or "LONG" in t or "ACQUISTO" in t) and "CHIUSURA" not in t and "CLOSE" not in t and "USCITA" not in t:
         data["signal_type"] = "OPEN"
         data["symbol"]    = "GOLD"
         data["direction"] = "BUY"
         m_price = re.search(r"(?:APERTURA|ENTRY|PREZZO|@)\s*:?\s*([\d,\.]+)", t)
         if m_price: data["price"] = float(m_price.group(1).replace(",", ""))
+        m_tp = re.search(r"TP\s*:?\s*([\d,\.]+)", t)
+        if m_tp: data["tp"] = float(m_tp.group(1).replace(",", ""))
+        print(f"GOLD BUY OPEN: price={data['price']} tp={data['tp']}")
         return data
 
-    if "GOLD" in t and ("SELL" in t or "SHORT" in t or "VENDITA" in t) and "CHIUSURA" not in t and "CLOSE" not in t:
+    # GOLD / XAUUSD ingresso SELL
+    if is_gold and ("SELL" in t or "SHORT" in t or "VENDITA" in t) and "CHIUSURA" not in t and "CLOSE" not in t and "USCITA" not in t:
         data["signal_type"] = "OPEN"
         data["symbol"]    = "GOLD"
         data["direction"] = "SELL"
         m_price = re.search(r"(?:APERTURA|ENTRY|PREZZO|@)\s*:?\s*([\d,\.]+)", t)
         if m_price: data["price"] = float(m_price.group(1).replace(",", ""))
+        m_tp = re.search(r"TP\s*:?\s*([\d,\.]+)", t)
+        if m_tp: data["tp"] = float(m_tp.group(1).replace(",", ""))
+        print(f"GOLD SELL OPEN: price={data['price']} tp={data['tp']}")
         return data
 
-    # GOLD chiusura
-    if "GOLD" in t and ("CHIUSURA" in t or "CLOSE" in t or "EXIT" in t or "USCITA" in t):
+    # GOLD / XAUUSD chiusura
+    if is_gold and ("CHIUSURA" in t or "CLOSE" in t or "EXIT" in t or "USCITA" in t):
         data["signal_type"] = "CLOSE"
         data["symbol"] = "GOLD"
         m_dir = re.search(r"(BUY|SELL|LONG|SHORT)", t)
@@ -194,6 +204,7 @@ def parse_signal(text: str) -> dict:
             data["direction"] = "BUY" if d in ("BUY", "LONG") else "SELL"
         m_exit = re.search(r"(?:USCITA|EXIT|CLOSE|@)\s*:?\s*([\d,\.]+)", t)
         if m_exit: data["price"] = float(m_exit.group(1).replace(",", ""))
+        print(f"GOLD CLOSE: direction={data['direction']} price={data['price']}")
         return data
 
     # INDICI chiusura
