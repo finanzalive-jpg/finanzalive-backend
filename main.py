@@ -1078,15 +1078,25 @@ async def get_fund_movements(service_code: str = None, user=Depends(get_user)):
         svc = supabase.table("services").select("id").eq("code", service_code).execute()
         if not svc.data:
             raise HTTPException(status_code=404, detail="Servizio non trovato")
-        result = supabase.table("fund_movements").select("*").eq("service_id", svc.data[0]["id"]) \
-            .in_("type", ["deposit","withdrawal","adjustment","balance_snapshot"]) \
+        svc_id = svc.data[0]["id"]
+        # Movimenti storici (deposit, withdrawal, adjustment, fee)
+        movimenti = supabase.table("fund_movements").select("*").eq("service_id", svc_id) \
+            .in_("type", ["deposit","withdrawal","adjustment","fee"]) \
             .order("moved_at", desc=False).execute()
+        # Solo l'ultimo balance_snapshot — evita il limite 1000 righe di Supabase
+        snapshot = supabase.table("fund_movements").select("*").eq("service_id", svc_id) \
+            .eq("type", "balance_snapshot") \
+            .order("moved_at", desc=True).limit(1).execute()
+        return movimenti.data + snapshot.data
     else:
         allowed_ids = [s["service_id"] for s in subs.data]
-        result = supabase.table("fund_movements").select("*").in_("service_id", allowed_ids) \
-            .in_("type", ["deposit","withdrawal","adjustment","balance_snapshot"]) \
+        movimenti = supabase.table("fund_movements").select("*").in_("service_id", allowed_ids) \
+            .in_("type", ["deposit","withdrawal","adjustment","fee"]) \
             .order("moved_at", desc=False).execute()
-    return result.data
+        snapshot = supabase.table("fund_movements").select("*").in_("service_id", allowed_ids) \
+            .eq("type", "balance_snapshot") \
+            .order("moved_at", desc=True).limit(1).execute()
+        return movimenti.data + snapshot.data
 
 @app.get("/admin/fund_movements", dependencies=[Depends(require_admin)])
 async def admin_fund_movements(service_id: int = None):
