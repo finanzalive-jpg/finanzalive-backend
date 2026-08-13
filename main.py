@@ -1355,3 +1355,174 @@ async def push_unsubscribe(request: Request):
     if endpoint:
         supabase.table('push_subscriptions').delete().eq('endpoint', endpoint).execute()
     return {"success": True}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# MT4 EXECUTOR QUEUE — IUPPITER
+# Endpoint di polling per EA MQL4: legge segnali da signals
+# e li espone all'EA che li esegue su MT4.
+# Aggiunta pura — zero modifiche al codice esistente.
+# ═══════════════════════════════════════════════════════════════════
+
+SYMBOL_MAP_TV_TO_MT4 = {
+    "DE40":   "GEREUR",
+    "UT100":  "NDXUSD",
+    "US100":  "NDXUSD",
+    "NAS100": "NDXUSD",
+    "US30":   "DJIUSD",
+    "JPN225": "JPXJPY",
+    "XAUUSD": "XAUUSD",
+    "GOLD":   "XAUUSD",
+}
+
+DEFAULT_LOTS_MT4 = {
+    "GEREUR": 1.0,
+    "NDXUSD": 1.0,
+    "DJIUSD": 1.0,
+    "JPXJPY": 1.0,
+    "XAUUSD": 0.10,
+}
+FOREX_DEFAULT_LOT = 0.10
+
+
+@app.get("/mt4/queue")
+async def mt4_queue_get(
+    symbol: str = None,
+    x_admin_secret: str = Header(None)
+):
+    """
+    Polling EA MT4: restituisce il primo segnale non ancora eseguito
+    (mt4_executed=false) per il simbolo MT4 richiesto.
+    """
+    if x_admin_secret != ADMIN_SECRET:
+        raise HTTPException(status_code=403, detail="Accesso negato")
+
+    if not symbol:
+        return {"signal": None}
+
+    sym_upper = symbol.upper().strip()
+
+    # Determina service_id dal simbolo MT4
+    if sym_upper in ["GEREUR", "NDXUSD", "DJIUSD", "JPXJPY"]:
+        svc_id = 4   # indices
+    elif sym_upper == "XAUUSD":
+        svc_id = 6   # gold
+    else:
+        svc_id = 3   # forex
+
+    # Simboli TradingView corrispondenti al simbolo MT4 richiesto
+    tv_syms = [k for k, v in SYMBOL_MAP_TV_TO_MT4.items() if v == sym_upper]
+
+    try:
+        result = supabase.table("signals") \
+            .select("*") \
+            .eq("service_id", svc_id) \
+            .eq("mt4_executed", False) \
+            .in_("signal_type", ["OPEN", "CLOSE"]) \
+            .order("created_at", desc=False) \
+            .execute()
+
+        if not result.data:
+            return {"signal": None}
+
+        # Filtra per simbolo nel message_text
+        matched = None
+        for sig in result.data:
+            msg = (sig.get("message_text") or "").upper()
+
+            if svc_id in [4, 6]:
+                # Indici e Gold: cerca il simbolo TV nel testo
+                for tv_sym in tv_syms:
+                    if tv_sym in msg:
+                        matched = sig
+                        break
+            else:
+                # Forex: estrai simbolo dall'header "ALERT FOR XXXXXX"
+                m = re.search(r"ALERT FOR ([A-Z]{6})", msg)
+                if m and m.group(1) == sym_upper:
+                    matched = sig
+
+            if matched:
+                break
+
+        if not matched:
+            return {"signal": None}
+
+        sig = matched
+        msg = (sig.get("message_text") or "").upper()
+
+        # Lotto default per simbolo
+        lot = DEFAULT_LOTS_MT4.get(sym_upper, FOREX_DEFAULT_LOT)
+
+        # Prezzo apertura
+        open_price = None
+        m_price = re.search(r"APERTURA:\s*([\d,\.]+)", msg)
+        if m_price:
+            open_price = float(m_price.group(1).replace(",", ""))
+
+        # Prezzo uscita per CLOSE
+        exit_price = None
+        m_exit = re.search(r"USCITA:\s*([\d,\.]+)", msg)
+        if m_exit:
+            exit_price = float(m_exit.group(1).replace(",", ""))
+
+        # TP
+        tp = None
+        m_tp = re.search(r"TP:\s*([\d,\.]+)", msg)
+        if m_tp:
+            tp_val = float(m_tp.group(1).replace(",", ""))
+            if tp_val > 0:
+                tp = tp_val
+
+        # SL
+        sl = None
+        m_sl = re.search(r"SL:\s*([\d,\.]+)", msg)
+        if m_sl:
+            sl_val = float(m_sl.group(1).replace(",", ""))
+            if sl_val > 0:
+                sl = sl_val
+
+        return {
+            "signal": {
+                "id":          sig["id"],
+                "signal_type": sig["signal_type"],
+                "direction":   sig["direction"],
+                "symbol":      sym_upper,
+                "lot":         lot,
+                "open_price":  open_price,
+                "exit_price":  exit_price,
+                "tp":          tp,
+                "sl":          sl,
+                "created_at":  str(sig["created_at"]),
+            }
+        }
+
+    except Exception as e:
+        print(f"MT4 queue error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/mt4/queue/{signal_id}/executed")
+async def mt4_mark_executed(
+    signal_id: int,
+    x_admin_secret: str = Header(None)
+):
+    """
+    EA chiama questo endpoint dopo aver eseguito l'ordine.
+    Marca il segnale come mt4_executed=true così non viene rieseguito.
+    """
+    if x_admin_secret != ADMIN_SECRET:
+        raise HTTPException(status_code=403, detail="Accesso negato")
+
+    try:
+        supabase.table("signals") \
+            .update({
+                "mt4_executed":    True,
+                "mt4_executed_at": datetime.utcnow().isoformat()
+            }) \
+            .eq("id", signal_id) \
+            .execute()
+        print(f"MT4 signal {signal_id} marcato eseguito")
+        return {"ok": True, "signal_id": signal_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
