@@ -18,7 +18,7 @@ import hmac as _hmac
 import base64 as _b64
 import time as _time
 import json as _json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import smtplib
@@ -1413,12 +1413,18 @@ async def mt4_queue_get(
     # Simboli TradingView corrispondenti al simbolo MT4 richiesto
     tv_syms = [k for k, v in SYMBOL_MAP_TV_TO_MT4.items() if v == sym_upper]
 
+    # Finestra temporale validità segnale
+    now_hour = datetime.now(timezone.utc).hour
+    max_age  = 120 if (now_hour >= 23 or now_hour < 1) else 2
+    cutoff   = datetime.now(timezone.utc) - timedelta(minutes=max_age)
+
     try:
         result = supabase.table("signals") \
             .select("*") \
             .eq("service_id", svc_id) \
             .eq("mt4_executed", False) \
             .in_("signal_type", ["OPEN", "CLOSE"]) \
+            .gte("created_at", cutoff.isoformat()) \
             .order("created_at", desc=False) \
             .execute()
 
