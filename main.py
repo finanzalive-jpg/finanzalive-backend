@@ -1457,7 +1457,7 @@ async def mt4_queue_get(
             sig = matched
             msg = (sig.get("message_text") or "").upper()
 
-            lot = DEFAULT_LOTS_MT4.get(sym_upper, FOREX_DEFAULT_LOT)
+            lot = 0  # Lotto gestito dall'EA — DEFAULT_LOTS_MT4 ignorato
 
             open_price = None
             m_price = re.search(r"APERTURA:\s*([\d,\.]+)", msg)
