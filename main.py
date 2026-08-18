@@ -1415,18 +1415,17 @@ async def mt4_queue_get(
         for sym_upper in symbols_list:
 
             # Determina service_id dal simbolo
-            if sym_upper in ["GEREUR", "NDXUSD", "DJIUSD", "JPXJPY"]:
+            # Gli indici arrivano dall'EA come simboli TV (DE40, UT100, US30, JPN225)
+            if sym_upper in ["DE40", "UT100", "US100", "NAS100", "US30", "JPN225"]:
                 svc_id = 4   # indices
             elif sym_upper == "XAUUSD":
                 svc_id = 6   # gold
             else:
                 svc_id = 3   # forex
 
-            # Simboli TradingView corrispondenti
-            tv_syms = [k for k, v in SYMBOL_MAP_TV_TO_MT4.items() if v == sym_upper]
-            # Per forex il simbolo TV coincide con il simbolo stesso
-            if svc_id == 3:
-                tv_syms = [sym_upper]
+            # Per indici e gold: cerca il simbolo direttamente nel message_text
+            # Per forex: cerca il simbolo nell'header "ALERT FOR XXXXXX"
+            tv_syms = [sym_upper]  # cerca sym_upper direttamente nel testo
 
             # Query segnali pending per questo service_id
             db_result = supabase.table("signals")                 .select("*")                 .eq("service_id", svc_id)                 .eq("mt4_executed", False)                 .in_("signal_type", ["OPEN", "CLOSE"])                 .gte("created_at", cutoff.isoformat())                 .order("created_at", desc=False)                 .execute()
