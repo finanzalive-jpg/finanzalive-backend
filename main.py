@@ -519,7 +519,7 @@ async def telegram_webhook(request: Request):
         return {"ok": True}
 
     # ── MODIFICA 4a: aggiunto azioni_italia ──
-    if service_code not in ["gold", "vanilla_monthly", "vanilla_weekly", "azioni_italia", "azioni_usa"]:
+    if service_code not in ["gold", "vanilla_monthly", "vanilla_weekly", "azioni_italia", "azioni_usa", "forex"]:
         return {"ok": True}
 
     try:
