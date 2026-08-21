@@ -519,7 +519,7 @@ async def telegram_webhook(request: Request):
         return {"ok": True}
 
     # ── MODIFICA 4a: aggiunto azioni_italia ──
-    if service_code not in ["gold", "vanilla_monthly", "vanilla_weekly", "azioni_italia", "azioni_usa", "forex"]:
+    if service_code not in ["gold", "vanilla_monthly", "vanilla_weekly", "azioni_italia", "azioni_usa", "forex", "indices"]:
         return {"ok": True}
 
     try:
@@ -997,11 +997,17 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
             except Exception as pe:
                 print(f"MT4 push open error: {pe}")
             try:
-                supabase.table("signals").insert({
-                    "service_id": service_id,
-                    "message_text": f"Alert for {symbol} {direction} Apertura: {price_val}",
-                    "signal_type": "OPEN", "direction": direction, "strike": price_val,
-                }).execute()
+                # Anti-duplicati: non salvare se webhook Telegram ha già salvato questo segnale
+                cutoff_dup = (datetime.utcnow() - timedelta(minutes=5)).isoformat()
+                existing_sig = supabase.table("signals").select("id")                     .eq("service_id", service_id)                     .eq("signal_type", "OPEN")                     .not_.is_("telegram_chat_id", "null")                     .gte("created_at", cutoff_dup)                     .execute()
+                if not existing_sig.data:
+                    supabase.table("signals").insert({
+                        "service_id": service_id,
+                        "message_text": f"Alert for {symbol} {direction} Apertura: {price_val}",
+                        "signal_type": "OPEN", "direction": direction, "strike": price_val,
+                    }).execute()
+                else:
+                    print(f"MT4 signal OPEN skip: già presente da webhook Telegram")
             except Exception as e:
                 print(f"MT4 signal warn: {e}")
         else:
@@ -1055,11 +1061,17 @@ async def mt4_trade(request: Request, x_admin_secret: str = Header(None)):
             except Exception as pe:
                 print(f"MT4 push close error: {pe}")
             try:
-                supabase.table("signals").insert({
-                    "service_id": service_id,
-                    "message_text": f"Alert for {symbol} Chiusura {direction} Uscita: {close_val}",
-                    "signal_type": "CLOSE", "direction": direction, "strike": close_val, "pnl": pnl_val,
-                }).execute()
+                # Anti-duplicati: non salvare se webhook Telegram ha già salvato questo segnale
+                cutoff_dup = (datetime.utcnow() - timedelta(minutes=5)).isoformat()
+                existing_sig_close = supabase.table("signals").select("id")                     .eq("service_id", service_id)                     .eq("signal_type", "CLOSE")                     .not_.is_("telegram_chat_id", "null")                     .gte("created_at", cutoff_dup)                     .execute()
+                if not existing_sig_close.data:
+                    supabase.table("signals").insert({
+                        "service_id": service_id,
+                        "message_text": f"Alert for {symbol} Chiusura {direction} Uscita: {close_val}",
+                        "signal_type": "CLOSE", "direction": direction, "strike": close_val, "pnl": pnl_val,
+                    }).execute()
+                else:
+                    print(f"MT4 signal CLOSE skip: già presente da webhook Telegram")
             except Exception as e:
                 print(f"MT4 signal close warn: {e}")
         else:
