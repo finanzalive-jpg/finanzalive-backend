@@ -72,7 +72,7 @@ CHANNEL_SERVICE_MAP = {
     -1002257080204: "azioni_usa",      # ← Canale Azioni USA
 }
 
-INDEX_SYMBOLS = ["US100", "US30", "DE40", "JPN225"]
+INDEX_SYMBOLS = ["US100", "US30", "GER40", "JPN225"]
 
 # ── MODIFICA 2: lista simboli azioni italiane ──────────────────────────────
 AZIONI_ITALIA_SYMBOLS = [
