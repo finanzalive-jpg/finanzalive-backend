@@ -1377,7 +1377,8 @@ async def push_unsubscribe(request: Request):
 # ═══════════════════════════════════════════════════════════════════
 
 SYMBOL_MAP_TV_TO_MT4 = {
-    "DE40":   "GEREUR",
+    "DE40":   "GEREUR", 
+    "GER40":  "DE40",
     "UT100":  "NDXUSD",
     "US100":  "NDXUSD",
     "NAS100": "NDXUSD",
@@ -1389,6 +1390,7 @@ SYMBOL_MAP_TV_TO_MT4 = {
 
 DEFAULT_LOTS_MT4 = {
     "GEREUR": 1.0,
+    "DE40"  : 1.0,
     "NDXUSD": 1.0,
     "DJIUSD": 1.0,
     "JPXJPY": 1.0,
@@ -1404,7 +1406,7 @@ async def mt4_queue_get(
 ):
     """
     Polling EA MT4 — multi-simbolo.
-    symbol può essere un singolo simbolo o più separati da pipe: DE40|UT100|XAUUSD|EURUSD
+    symbol può essere un singolo simbolo o più separati da pipe: GER40|UT100|XAUUSD|EURUSD
     Restituisce array di segnali pending, uno per simbolo che ha segnali.
     """
     if x_admin_secret != ADMIN_SECRET:
@@ -1427,8 +1429,8 @@ async def mt4_queue_get(
         for sym_upper in symbols_list:
 
             # Determina service_id dal simbolo
-            # Gli indici arrivano dall'EA come simboli TV (DE40, UT100, US30, JPN225)
-            if sym_upper in ["DE40", "UT100", "US100", "NAS100", "US30", "JPN225"]:
+            # Gli indici arrivano dall'EA come simboli TV (GER40, UT100, US30, JPN225)
+            if sym_upper in ["DE40", "UT100", "US100", "NAS100", "US30", "JPN225", "GER40"]:
                 svc_id = 4   # indices
             elif sym_upper == "XAUUSD":
                 svc_id = 6   # gold
