@@ -72,7 +72,8 @@ CHANNEL_SERVICE_MAP = {
     -1002257080204: "azioni_usa",      # ← Canale Azioni USA
 }
 
-INDEX_SYMBOLS = ["US100", "US30", "GER40", "JPN225"]
+# Alias inclusi: TradingView manda NAS100 (non US100) e a volte DE40 nell'intestazione
+INDEX_SYMBOLS = ["US100", "NAS100", "UT100", "US30", "GER40", "DE40", "JPN225"]
 
 # ── MODIFICA 2: lista simboli azioni italiane ──────────────────────────────
 AZIONI_ITALIA_SYMBOLS = [
@@ -227,7 +228,10 @@ def parse_signal(text: str) -> dict:
         if sym in t and "SCALPING" in t and "APERTURA" in t:
             data["signal_type"] = "OPEN"
             data["symbol"] = sym
-            m_dir = re.search(sym + r"\s*(BUY|SELL)", t)
+            # La direzione sta davanti a SCALPING ("BUY SCALPING GER40"), a prescindere
+            # dal simbolo in intestazione ("Alert for DE40" / "Alert for NAS100").
+            m_dir = re.search(r"\b(BUY|SELL)\s+SCALPING\b", t)
+            if not m_dir: m_dir = re.search(sym + r"\s*(BUY|SELL)", t)
             if not m_dir: m_dir = re.search(r"ALERT FOR " + sym + r"(BUY|SELL)", t)
             if m_dir: data["direction"] = m_dir.group(1)
             m_price = re.search(r"APERTURA:\s*([\d,\.]+)", t)
@@ -1497,10 +1501,20 @@ async def mt4_queue_get(
                 if sl_val > 0:
                     sl = sl_val
 
+            # Direzione: dal DB; se manca la ricavo dal testo ("BUY SCALPING X", "CHIUSURA SELL X").
+            # Mai consegnare all'EA un OPEN senza direzione valida: l'EA andrebbe SELL di default.
+            direction = (sig.get("direction") or "").upper()
+            if direction not in ("BUY", "SELL"):
+                m_d = re.search(r"\b(BUY|SELL)\b", msg)
+                direction = m_d.group(1) if m_d else None
+            if sig["signal_type"] == "OPEN" and direction not in ("BUY", "SELL"):
+                print(f"MT4 queue: segnale {sig['id']} OPEN senza direzione valida, NON consegnato")
+                continue
+
             results.append({
                 "id":          sig["id"],
                 "signal_type": sig["signal_type"],
-                "direction":   sig["direction"],
+                "direction":   direction,
                 "symbol":      sym_upper,
                 "lot":         lot,
                 "open_price":  open_price,
